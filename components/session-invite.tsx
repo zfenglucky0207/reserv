@@ -32,7 +32,14 @@ import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { EditorBottomBar } from "./editor-bottom-bar"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import { getDefaultCoverStyle } from "@/lib/session/default-covers"
+
+// Default cover background colors by sport (when no cover image is set)
+const DEFAULT_COVER_BG: Record<string, string> = {
+  Badminton: "#ECFCCB",   // light green (lime-100, matches badminton lime green theme)
+  Futsal: "#EAF2FF",      // light blue (matches futsal blue vibe)
+  Volleyball: "#F3F4F6",  // light gray (clean neutral)
+  Pickleball: "#FFF1E6",  // light orange/peach (matches pickleball orange vibe)
+}
 
 // Sport to cover image mapping
 const SPORT_COVER_MAP: Record<string, { cyberpunk: string; ghibli: string }> = {
@@ -97,20 +104,27 @@ export function SessionInvite({
   const { toast } = useToast()
 
   // UI Mode state (dark/light) with localStorage persistence
-  const [uiMode, setUiMode] = useState<"dark" | "light">(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("reserv-ui-mode")
-      return (saved === "light" || saved === "dark") ? saved : "dark"
-    }
-    return "dark"
-  })
+  // Always start with "dark" to match server render, then sync from localStorage on client
+  const [uiMode, setUiMode] = useState<"dark" | "light">("dark")
+  const [isUiModeHydrated, setIsUiModeHydrated] = useState(false)
 
-  // Persist uiMode to localStorage whenever it changes
+  // Hydrate uiMode from localStorage on client mount (prevents hydration mismatch)
   useEffect(() => {
     if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("reserv-ui-mode")
+      if (saved === "light" || saved === "dark") {
+        setUiMode(saved)
+      }
+      setIsUiModeHydrated(true)
+    }
+  }, [])
+
+  // Persist uiMode to localStorage whenever it changes (after hydration)
+  useEffect(() => {
+    if (typeof window !== "undefined" && isUiModeHydrated) {
       localStorage.setItem("reserv-ui-mode", uiMode)
     }
-  }, [uiMode])
+  }, [uiMode, isUiModeHydrated])
 
   // Sync preview mode with URL query parameter
   useEffect(() => {
@@ -139,6 +153,8 @@ export function SessionInvite({
   const [isDateModalOpen, setIsDateModalOpen] = useState(false)
   const [isLocationModalOpen, setIsLocationModalOpen] = useState(false)
   const [isCoverPickerOpen, setIsCoverPickerOpen] = useState(false)
+  // Pending cover selection in modal (not applied until Confirm is clicked)
+  const [pendingCoverUrl, setPendingCoverUrl] = useState<string | null>(null)
 
   const [eventTitle, setEventTitle] = useState("Saturday Morning Smash")
   const [titleFont, setTitleFont] = useState<keyof typeof TITLE_FONTS>("Classic")
@@ -179,6 +195,13 @@ export function SessionInvite({
     console.log(`[SessionInvite] optimisticCoverUrl state changed:`, optimisticCoverUrl)
   }, [optimisticCoverUrl])
 
+  // Initialize pendingCoverUrl when modal opens
+  useEffect(() => {
+    if (isCoverPickerOpen) {
+      setPendingCoverUrl(optimisticCoverUrl)
+    }
+  }, [isCoverPickerOpen, optimisticCoverUrl])
+
   // Sync optimistic state when initialCoverUrl prop changes (e.g., after server refresh)
   // Only sync if the prop actually changed (to confirm DB update succeeded)
   useEffect(() => {
@@ -206,7 +229,7 @@ export function SessionInvite({
   }
 
   // Update cover with optimistic UI and persistence
-  const updateCover = React.useCallback(async (coverUrl: string, reopenModalOnError = false) => {
+  const updateCover = React.useCallback(async (coverUrl: string | null, reopenModalOnError = false) => {
     console.log(`[updateCover] Called with:`, { coverUrl, sessionId, reopenModalOnError })
     
     // Store previous for rollback using functional update to get current value
@@ -233,7 +256,7 @@ export function SessionInvite({
 
     try {
       console.log(`[updateCover] Calling updateSessionCoverUrl server action...`)
-      // Persist to database
+      // Persist to database (coverUrl can be null for default color)
       const { updateSessionCoverUrl } = await import("@/app/host/sessions/[id]/actions")
       const result = await updateSessionCoverUrl(sessionId, coverUrl)
       console.log(`[updateCover] Server action result:`, result)
@@ -264,6 +287,11 @@ export function SessionInvite({
     }
   }, [sessionId, router, toast, isCoverPickerOpen])
 
+  // Handle confirm button click in cover picker modal
+  const handleCoverConfirm = () => {
+    updateCover(pendingCoverUrl, false)
+  }
+
   const [bankName, setBankName] = useState("")
   const [accountNumber, setAccountNumber] = useState("")
   const [accountName, setAccountName] = useState("")
@@ -278,17 +306,15 @@ export function SessionInvite({
     vignette: true,
   })
 
-  // Handle sport change - automatically update cover and theme
+  // Handle sport change - only update sport and theme, NOT cover
   const handleSportChange = (sport: string) => {
+    console.log(`[handleSportChange] Changing sport to: ${sport}, current optimisticCoverUrl: ${optimisticCoverUrl}`)
     setSelectedSport(sport)
-    const sportCovers = SPORT_COVER_MAP[sport] || SPORT_COVER_MAP["Badminton"]
-    // Default to cyberpunk when sport changes
-    const newCoverUrl = sportCovers.cyberpunk
-    // Update cover optimistically and persist (don't reopen modal on error for sport changes)
-    updateCover(newCoverUrl, false)
     // Update theme based on sport
     const newTheme = SPORT_THEME_MAP[sport] || "badminton"
     setTheme(newTheme)
+    // DO NOT update cover - let the default background color update automatically
+    // If user has selected a cover image, it will remain. If not, the background color will change.
     toast({
       title: "Sport updated",
       description: `Changed to ${sport} with ${newTheme} theme.`,
@@ -359,11 +385,6 @@ export function SessionInvite({
     })
   }
 
-  const handleCoverSelect = (coverUrl: string) => {
-    console.log(`[handleCoverSelect] Cover selected:`, { coverUrl, sessionId })
-    // When explicitly selecting from modal, reopen on error
-    updateCover(coverUrl, true)
-  }
 
   const handlePaymentImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -663,20 +684,29 @@ export function SessionInvite({
           transition={{ duration: 0.6 }}
           className="relative min-h-[85vh] overflow-hidden"
         >
-            {/* Background Image or Gradient */}
-            {optimisticCoverUrl ? (
-          <div
-            className="absolute inset-0 bg-cover bg-center"
-            style={{
-                  backgroundImage: `url("${encodeURI(optimisticCoverUrl)}")`,
-                }}
-              />
-            ) : (
-              <div
-                className="absolute inset-0"
-                style={getDefaultCoverStyle(selectedSport)}
-              />
-            )}
+            {/* Background Image or Default Color */}
+            {(() => {
+              const hasCustomCover = Boolean(optimisticCoverUrl)
+              if (hasCustomCover) {
+                // User has selected a cover image - show it
+                return (
+                  <div
+                    className="absolute inset-0 bg-cover bg-center"
+                    style={{
+                      backgroundImage: `url("${encodeURI(optimisticCoverUrl!)}")`,
+                    }}
+                  />
+                )
+              } else {
+                // No custom cover - show sport-specific default color
+                return (
+                  <div
+                    className="absolute inset-0"
+                    style={{ backgroundColor: DEFAULT_COVER_BG[selectedSport] ?? "#FFFFFF" }}
+                  />
+                )
+              }
+            })()}
 
           {effects.glow && (
             <div className="absolute inset-0 bg-gradient-radial from-[var(--theme-accent)]/20 via-transparent to-transparent" />
@@ -733,7 +763,7 @@ export function SessionInvite({
                           whileHover={{ scale: 1.02 }}
                           whileTap={{ scale: 0.98 }}
                           transition={{ duration: 0.15 }}
-                          className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border border-[var(--theme-accent)]/30 px-3 py-1.5 rounded-full text-xs font-medium inline-flex items-center gap-1.5"
+                          className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border border-[var(--theme-accent)]/30 px-3 py-1.5 rounded-full text-xs font-medium inline-flex items-center gap-1.5 focus:outline-none focus:ring-0"
                         >
                           {selectedSport}
                           <ChevronDown className="w-3 h-3" />
@@ -778,7 +808,7 @@ export function SessionInvite({
                       whileHover={{ scale: 1.02 }}
                       whileTap={{ scale: 0.98 }}
                       transition={{ duration: 0.15 }}
-                      className={`${glassPill} px-3 py-1.5 rounded-full text-xs font-medium inline-flex items-center gap-1.5`}
+                      className={`${glassPill} px-3 py-1.5 rounded-full text-xs font-medium inline-flex items-center gap-1.5 focus:outline-none focus:ring-0`}
                     >
                       <Upload className="w-3 h-3" />
                       Change cover
@@ -813,7 +843,7 @@ export function SessionInvite({
                             <button
                               key={font}
                               onClick={() => setTitleFont(font)}
-                              className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all ${
+                              className={`px-4 py-1.5 rounded-full text-xs font-medium transition-all focus:outline-none focus:ring-0 ${
                                 titleFont === font
                                   ? uiMode === "dark"
                                     ? "bg-white/10 text-[var(--theme-accent-light)] border border-[var(--theme-accent)]/40"
@@ -847,7 +877,7 @@ export function SessionInvite({
                             whileHover={{ scale: 1.01 }}
                             whileTap={{ scale: 0.99 }}
                             transition={{ duration: 0.15 }}
-                            className={`w-full ${glassCard} rounded-2xl p-4 flex items-center gap-3 text-left min-h-[54px]`}
+                            className={`w-full ${glassCard} rounded-2xl p-4 flex items-center gap-3 text-left min-h-[54px] focus:outline-none focus:ring-0`}
                           >
                             <Calendar className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
@@ -863,7 +893,7 @@ export function SessionInvite({
                             whileHover={{ scale: 1.01 }}
                             whileTap={{ scale: 0.99 }}
                             transition={{ duration: 0.15 }}
-                            className={`w-full ${glassCard} rounded-2xl p-4 flex items-center gap-3 text-left min-h-[54px]`}
+                            className={`w-full ${glassCard} rounded-2xl p-4 flex items-center gap-3 text-left min-h-[54px] focus:outline-none focus:ring-0`}
                           >
                             <MapPin className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
@@ -985,7 +1015,7 @@ export function SessionInvite({
                         whileHover={{ scale: 1.02 }}
                         whileTap={{ scale: 0.98 }}
                         transition={{ duration: 0.15 }}
-                        className={`${uiMode === "dark" ? "bg-white/10 border-white/20 text-white" : "bg-white/70 border-black/10 text-black"} backdrop-blur-sm px-4 py-3 rounded-full text-sm font-medium flex items-center justify-center gap-2`}
+                        className={`${uiMode === "dark" ? "bg-white/10 border-white/20 text-white" : "bg-white/70 border-black/10 text-black"} backdrop-blur-sm px-4 py-3 rounded-full text-sm font-medium flex items-center justify-center gap-2 focus:outline-none focus:ring-0`}
                       >
                         <Copy className="w-4 h-4" />
                         Copy invite link
@@ -1313,34 +1343,38 @@ export function SessionInvite({
       </Dialog>
 
       <Dialog open={isCoverPickerOpen} onOpenChange={setIsCoverPickerOpen}>
-        <DialogContent className="bg-slate-900 border-white/10 text-white max-w-md max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-semibold">Choose a cover</DialogTitle>
-            <p className="text-sm text-white/60 mt-1">Select a style for {selectedSport}</p>
-          </DialogHeader>
-          <div className="grid grid-cols-1 gap-4 mt-4">
-            {getCoverOptions().map((option) => (
+        <DialogContent className="bg-slate-900 border-white/10 text-white max-w-md p-0 overflow-hidden">
+          {/* Header */}
+          <div className="px-6 pt-6 pb-3">
+            <DialogHeader>
+              <DialogTitle className="text-xl font-semibold">Choose a cover</DialogTitle>
+              <p className="text-sm text-white/60 mt-1">Select a style for {selectedSport}</p>
+            </DialogHeader>
+          </div>
+
+          {/* Scrollable options */}
+          <div className="px-6 pb-28 overflow-y-auto max-h-[70vh]">
+            <div className="mt-4 flex flex-col gap-4">
+              {/* Default color option (first) */}
               <motion.button
-                key={option.id}
-                onClick={() => handleCoverSelect(option.path)}
+                onClick={() => setPendingCoverUrl(null)}
                 whileHover={{ scale: 1.02 }}
                 whileTap={{ scale: 0.98 }}
                 transition={{ duration: 0.15 }}
-                className={`relative aspect-video rounded-lg overflow-hidden border-2 transition-all ${
-                  optimisticCoverUrl === option.path
+                className={`relative w-full aspect-video rounded-xl overflow-hidden border-2 transition-all focus:outline-none focus:ring-0 ${
+                  pendingCoverUrl === null
                     ? "border-[var(--theme-accent)] ring-2 ring-[var(--theme-accent)]/50"
                     : "border-white/10 hover:border-white/30"
                 }`}
               >
-                <img
-                  src={option.path || "/placeholder.svg"}
-                  alt={option.label}
-                  className="w-full h-full object-cover"
+                <div
+                  className="w-full h-full"
+                  style={{ backgroundColor: DEFAULT_COVER_BG[selectedSport] ?? "#FFFFFF" }}
                 />
                 <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/60 to-transparent p-4">
                   <div className="flex items-center justify-between">
-                    <span className="text-white font-medium text-sm">{option.label}</span>
-                    {optimisticCoverUrl === option.path && (
+                    <span className="text-white font-medium text-sm">Default color</span>
+                    {pendingCoverUrl === null && (
                       <div className="flex items-center gap-2">
                         <Check className="w-5 h-5 text-[var(--theme-accent-light)]" />
                         <span className="text-xs text-[var(--theme-accent-light)] font-medium">Selected</span>
@@ -1348,7 +1382,7 @@ export function SessionInvite({
                     )}
                   </div>
                 </div>
-                {optimisticCoverUrl === option.path && (
+                {pendingCoverUrl === null && (
                   <div className="absolute inset-0 bg-[var(--theme-accent)]/10 flex items-center justify-center pointer-events-none">
                     <div className="absolute top-3 right-3 bg-[var(--theme-accent)] rounded-full p-1.5">
                       <Check className="w-4 h-4 text-black" />
@@ -1356,7 +1390,58 @@ export function SessionInvite({
                   </div>
                 )}
               </motion.button>
-            ))}
+
+              {/* Image cover options */}
+              {getCoverOptions().map((option) => (
+                <motion.button
+                  key={option.id}
+                  onClick={() => setPendingCoverUrl(option.path)}
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  transition={{ duration: 0.15 }}
+                  className={`relative w-full aspect-video rounded-xl overflow-hidden border-2 transition-all focus:outline-none focus:ring-0 ${
+                    pendingCoverUrl === option.path
+                      ? "border-[var(--theme-accent)] ring-2 ring-[var(--theme-accent)]/50"
+                      : "border-white/10 hover:border-white/30"
+                  }`}
+                >
+                  <img
+                    src={option.path || "/placeholder.svg"}
+                    alt={option.label}
+                    className="w-full h-full object-cover"
+                  />
+                  <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 via-black/60 to-transparent p-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-white font-medium text-sm">{option.label}</span>
+                      {pendingCoverUrl === option.path && (
+                        <div className="flex items-center gap-2">
+                          <Check className="w-5 h-5 text-[var(--theme-accent-light)]" />
+                          <span className="text-xs text-[var(--theme-accent-light)] font-medium">Selected</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {pendingCoverUrl === option.path && (
+                    <div className="absolute inset-0 bg-[var(--theme-accent)]/10 flex items-center justify-center pointer-events-none">
+                      <div className="absolute top-3 right-3 bg-[var(--theme-accent)] rounded-full p-1.5">
+                        <Check className="w-4 h-4 text-black" />
+                      </div>
+                    </div>
+                  )}
+                </motion.button>
+              ))}
+            </div>
+          </div>
+
+          {/* Sticky footer */}
+          <div className="sticky bottom-0 left-0 right-0 z-10 border-t border-white/10 bg-slate-900/95 backdrop-blur px-6 py-4">
+            <Button
+              onClick={handleCoverConfirm}
+              disabled={pendingCoverUrl === optimisticCoverUrl}
+              className="w-full rounded-full h-12 bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium shadow-lg shadow-lime-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Confirm
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

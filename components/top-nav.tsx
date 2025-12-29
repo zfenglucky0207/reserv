@@ -15,7 +15,6 @@ import {
 } from "@/components/ui/dropdown-menu"
 import { LoginDialog } from "@/components/login-dialog"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
-import { ThemeToggle } from "@/components/theme-toggle"
 
 interface TopNavProps {
   showCreateNow?: boolean
@@ -89,20 +88,18 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
                     Sign out
                   </DropdownMenuItem>
                 </DropdownMenuContent>
-              </DropdownMenu>
-                <ThemeToggle />
-              </>
-            ) : (
-              <>
-              <button
-                onClick={() => setLoginDialogOpen(true)}
-                  className="text-gray-700 dark:text-white/70 hover:text-gray-900 dark:hover:text-white text-sm font-medium transition-colors"
-              >
-                Login
-              </button>
-                <ThemeToggle />
-              </>
-            )}
+                      </DropdownMenu>
+                    </>
+                  ) : (
+                    <>
+                    <button
+                      onClick={() => setLoginDialogOpen(true)}
+                        className="text-gray-700 dark:text-white/70 hover:text-gray-900 dark:hover:text-white text-sm font-medium transition-colors"
+                    >
+                      Login
+                    </button>
+                    </>
+                  )}
           </div>
         </div>
       </nav>

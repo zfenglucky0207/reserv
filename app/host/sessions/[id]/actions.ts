@@ -55,7 +55,7 @@ export async function updateSessionHostName(sessionId: string, hostName: string 
 /**
  * Update session cover URL
  */
-export async function updateSessionCoverUrl(sessionId: string, coverUrl: string) {
+export async function updateSessionCoverUrl(sessionId: string, coverUrl: string | null) {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
 
