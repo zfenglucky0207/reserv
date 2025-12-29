@@ -2,7 +2,7 @@
 
 import * as React from "react"
 import { useState, useEffect, useRef } from "react"
-import { motion, AnimatePresence } from "framer-motion"
+import { motion, AnimatePresence, LayoutGroup } from "framer-motion"
 import { useRouter, usePathname, useSearchParams } from "next/navigation"
 import { useAuth } from "@/lib/hooks/use-auth"
 import { TopNav } from "./top-nav"
@@ -30,6 +30,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
 import { EditorBottomBar } from "./editor-bottom-bar"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
+import { getDefaultCoverStyle } from "@/lib/session/default-covers"
 
 // Sport to cover image mapping
 const SPORT_COVER_MAP: Record<string, { cyberpunk: string; ghibli: string }> = {
@@ -259,9 +260,14 @@ export function SessionInvite({
     vignette: true,
   })
 
-  // Handle sport change - only update sport and theme, NOT cover
+  // Handle sport change - automatically update cover and theme
   const handleSportChange = (sport: string) => {
     setSelectedSport(sport)
+    const sportCovers = SPORT_COVER_MAP[sport] || SPORT_COVER_MAP["Badminton"]
+    // Default to cyberpunk when sport changes
+    const newCoverUrl = sportCovers.cyberpunk
+    // Update cover optimistically and persist (don't reopen modal on error for sport changes)
+    updateCover(newCoverUrl, false)
     // Update theme based on sport
     const newTheme = SPORT_THEME_MAP[sport] || "badminton"
     setTheme(newTheme)
@@ -270,7 +276,6 @@ export function SessionInvite({
       description: `Changed to ${sport} with ${newTheme} theme.`,
       variant: "success",
     })
-    // Note: Cover remains unchanged - white by default, or existing image if set
   }
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -569,6 +574,7 @@ export function SessionInvite({
     >
       {/* Top Navigation - only show in edit mode */}
       {isEditMode && <TopNav showCreateNow={false} />}
+
       {effects.grain && (
         <div className="fixed inset-0 pointer-events-none z-[100] opacity-[0.015] mix-blend-overlay">
           <svg className="w-full h-full">
@@ -588,16 +594,16 @@ export function SessionInvite({
         />
       )}
 
-      {/* Top Navigation - only show in edit mode */}
-      {isEditMode && <TopNav showCreateNow={false} />}
-
+      {/* Preview Bar - sticky below TopNav */}
       <AnimatePresence>
         {isPreviewMode && (
           <motion.div
-            initial={{ y: -100 }}
-            animate={{ y: 0 }}
-            exit={{ y: -100 }}
-            className="fixed top-14 left-0 right-0 z-40 bg-lime-500/90 text-black px-4 py-2 flex items-center justify-between safe-top"
+            key="previewbar"
+            initial={{ y: -8, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: -8, opacity: 0 }}
+            transition={{ duration: 0.18, ease: "easeOut" }}
+            className="sticky top-14 z-40 bg-lime-500/90 text-black px-4 py-2 flex items-center justify-between"
           >
             <span className="font-medium text-xs">Previewing as participant</span>
             <Button
@@ -611,51 +617,79 @@ export function SessionInvite({
         )}
       </AnimatePresence>
 
-      {/* Main Content */}
-      <div className="relative">
-        {/* Hero Card with Full-Height Immersive Background */}
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.6 }}
-          className="relative min-h-[85vh] overflow-hidden"
-        >
-          {/* Background Image or White */}
-          {optimisticCoverUrl ? (
-            <div
-              className="absolute inset-0 bg-cover bg-center"
-              style={{
-                backgroundImage: `url("${encodeURI(optimisticCoverUrl)}")`,
-              }}
-            />
-          ) : (
-            <div
-              className="absolute inset-0 bg-white"
-            />
-          )}
+      {/* Main Content - Hero Section */}
+      <LayoutGroup>
+        <div className="relative">
+          {/* Hero Card with Full-Height Immersive Background */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.6 }}
+            className="relative min-h-[85vh] overflow-hidden"
+          >
+            {/* Background Image or Gradient */}
+            {optimisticCoverUrl ? (
+              <div
+                className="absolute inset-0 bg-cover bg-center"
+                style={{
+                  backgroundImage: `url("${encodeURI(optimisticCoverUrl)}")`,
+                }}
+              />
+            ) : (
+              <div
+                className="absolute inset-0"
+                style={getDefaultCoverStyle(selectedSport)}
+              />
+            )}
 
-          {effects.glow && (
-            <div className="absolute inset-0 bg-gradient-radial from-[var(--theme-accent)]/20 via-transparent to-transparent" />
-          )}
+            {effects.glow && (
+              <div className="absolute inset-0 bg-gradient-radial from-[var(--theme-accent)]/20 via-transparent to-transparent" />
+            )}
 
-          {/* Gradient Overlay - Lighter when white background, stronger when image */}
-          {optimisticCoverUrl ? (
+            {/* Gradient Overlay - Lighter for better visibility */}
             <div className="absolute inset-0 bg-gradient-to-b from-black/20 via-black/30 to-black/60" />
-          ) : (
-            <div className="absolute inset-0 bg-gradient-to-b from-black/8 via-black/10 to-black/12" />
-          )}
 
-          {/* Content */}
-          <div className="relative z-10 flex flex-col min-h-[85vh] px-6 pt-24 pb-8">
-            <div className="flex-1 flex flex-col justify-between">
-              {/* Top Section */}
-              <div>
+            {/* Scroll Cue - Only show in preview/public mode when not scrolled */}
+            {(!isEditMode || isPreviewMode) && !scrolled && (
+              <motion.div
+                className="absolute left-0 right-0 bottom-24 z-20 flex justify-center pointer-events-none"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.4 }}
+              >
                 <motion.div
-                  initial={{ opacity: 0, y: -10 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.15 }}
-                  className="flex items-center justify-between mb-4"
+                  animate={{
+                    opacity: [0.5, 1, 0.5],
+                    y: [0, 10, 0],
+                  }}
+                  transition={{
+                    duration: 1.5,
+                    repeat: Infinity,
+                    ease: "easeInOut",
+                  }}
+                  className="bg-black/30 backdrop-blur-sm rounded-full p-2 border border-white/20"
                 >
+                  <ChevronDown className="w-10 h-10 sm:w-12 sm:h-12 text-white/90" />
+                </motion.div>
+              </motion.div>
+            )}
+
+            {/* Content */}
+            <motion.div
+              layout
+              transition={{ duration: 0.22, ease: "easeOut" }}
+              className={`relative z-10 flex flex-col min-h-[85vh] px-6 pb-8 ${
+                isEditMode && !isPreviewMode ? "pt-16" : "pt-24"
+              }`}
+            >
+              <div className="flex-1 flex flex-col justify-between">
+                {/* Top Section */}
+                <motion.div layout transition={{ duration: 0.22, ease: "easeOut" }}>
+                  <motion.div
+                    layout
+                    transition={{ duration: 0.22, ease: "easeOut" }}
+                    className="flex items-center justify-between mb-4"
+                  >
                   {isEditMode && !isPreviewMode ? (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -714,10 +748,18 @@ export function SessionInvite({
                       Change cover
                     </motion.button>
                   )}
-                </motion.div>
+                  </motion.div>
 
-                <div className="space-y-6">
-                  <div className="space-y-4">
+                  <motion.div
+                    layout
+                    transition={{ duration: 0.22, ease: "easeOut" }}
+                    className="space-y-6"
+                  >
+                    <motion.div
+                      layout
+                      transition={{ duration: 0.22, ease: "easeOut" }}
+                      className="space-y-4"
+                    >
                     {isEditMode && !isPreviewMode ? (
                       <div className="space-y-3">
                         <div className="bg-white/5 backdrop-blur-sm border border-white/10 rounded-2xl p-4">
@@ -747,11 +789,13 @@ export function SessionInvite({
                         </div>
                       </div>
                     ) : (
-                      <h1
+                      <motion.h1
+                        layout
+                        transition={{ duration: 0.22, ease: "easeOut" }}
                         className={`text-4xl font-bold text-white ${isPreviewMode ? "text-left" : "text-center"} ${TITLE_FONTS[titleFont]}`}
                       >
                         {eventTitle}
-                      </h1>
+                      </motion.h1>
                     )}
 
                     {isEditMode && !isPreviewMode ? (
@@ -860,35 +904,40 @@ export function SessionInvite({
                         </div>
                       </div>
                     )}
-                  </div>
+                    </motion.div>
 
-                  <div className="flex items-center gap-3 pt-2">
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)]" />
-                    <div>
-                      <p className="text-xs text-white/70 uppercase tracking-wide">Hosted by</p>
-                      {isEditMode && !isPreviewMode ? (
-                        <input
-                          type="text"
-                          value={hostNameInput}
-                          onChange={(e) => {
-                            const value = e.target.value
-                            if (value.length <= 40) {
-                              setHostNameInput(value)
-                            }
-                          }}
-                          onFocus={handleHostNameFocus}
-                          onBlur={handleHostNameSave}
-                          onKeyDown={handleHostNameKeyDown}
-                          disabled={isHostNameSaving}
-                          maxLength={40}
-                          className="bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b focus:border-white/30 p-0 transition-colors disabled:opacity-50 min-w-[80px]"
-                          placeholder={getUserProfileName() ?? "Host"}
-                        />
-                      ) : (
-                        <p className="text-white font-medium">{displayHostName}</p>
-                      )}
-                    </div>
-                  </div>
+                    <motion.div
+                      layout
+                      transition={{ duration: 0.22, ease: "easeOut" }}
+                      className="flex items-center gap-3 pt-2"
+                    >
+                      <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)]" />
+                      <div>
+                        <p className="text-xs text-white/70 uppercase tracking-wide">Hosted by</p>
+                        {isEditMode && !isPreviewMode ? (
+                          <input
+                            type="text"
+                            value={hostNameInput}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value.length <= 40) {
+                                setHostNameInput(value)
+                              }
+                            }}
+                            onFocus={handleHostNameFocus}
+                            onBlur={handleHostNameSave}
+                            onKeyDown={handleHostNameKeyDown}
+                            disabled={isHostNameSaving}
+                            maxLength={40}
+                            className="bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b focus:border-white/30 p-0 transition-colors disabled:opacity-50 min-w-[80px]"
+                            placeholder={getUserProfileName() ?? "Host"}
+                          />
+                        ) : (
+                          <p className="text-white font-medium">{displayHostName}</p>
+                        )}
+                      </div>
+                    </motion.div>
+                  </motion.div>
 
                   {isEditMode && !isPreviewMode && (
                     <div className="flex flex-col gap-2 pt-4">
@@ -912,13 +961,16 @@ export function SessionInvite({
                       </motion.button>
                     </div>
                   )}
-                </div>
+                </motion.div>
               </div>
-            </div>
-          </div>
-        </motion.div>
+            </motion.div>
+          </motion.div>
 
-        <div className="px-6 pt-8 pb-32 space-y-4">
+          <motion.div
+            layout
+            transition={{ duration: 0.22, ease: "easeOut" }}
+            className="px-6 pt-8 pb-32 space-y-4"
+          >
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -1158,8 +1210,9 @@ export function SessionInvite({
               </Card>
             </motion.div>
           )}
+          </motion.div>
         </div>
-      </div>
+      </LayoutGroup>
 
       <Dialog open={isDateModalOpen} onOpenChange={setIsDateModalOpen}>
         <DialogContent className="bg-slate-900 border-white/10 text-white max-w-md max-h-[90vh] overflow-y-auto">
@@ -1268,17 +1321,28 @@ export function SessionInvite({
         </DialogContent>
       </Dialog>
 
-      {isEditMode && !isPreviewMode && (
-        <EditorBottomBar
-          onPreview={() => handlePreviewModeChange(true)}
-          onPublish={handlePublish}
-          onSaveDraft={handleSaveDraft}
-          theme={theme}
-          onThemeChange={setTheme}
-          effects={effects}
-          onEffectsChange={setEffects}
-        />
-      )}
+      {/* Editor Bottom Bar - Edit mode only */}
+      <AnimatePresence>
+        {isEditMode && !isPreviewMode && (
+          <motion.div
+            key="editorbar"
+            initial={{ y: 12, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 12, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+          >
+            <EditorBottomBar
+              onPreview={() => handlePreviewModeChange(true)}
+              onPublish={handlePublish}
+              onSaveDraft={handleSaveDraft}
+              theme={theme}
+              onThemeChange={setTheme}
+              effects={effects}
+              onEffectsChange={setEffects}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       {/* Login Dialog for publish gating */}
       <LoginDialog
@@ -1288,13 +1352,16 @@ export function SessionInvite({
       />
 
       {/* Sticky RSVP Dock - Only show in preview mode or when not in edit mode */}
-      {(!isEditMode || isPreviewMode) && (
-        <motion.div
-          initial={{ y: 100 }}
-          animate={{ y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="fixed bottom-0 left-0 right-0 z-40 pb-safe"
-        >
+      <AnimatePresence>
+        {(!isEditMode || isPreviewMode) && (
+          <motion.div
+            key="rsvpdock"
+            initial={{ y: 12, opacity: 0 }}
+            animate={{ y: 0, opacity: 1 }}
+            exit={{ y: 12, opacity: 0 }}
+            transition={{ duration: 0.2, ease: "easeOut" }}
+            className="fixed bottom-0 left-0 right-0 z-40 pb-safe"
+          >
           <div className="mx-auto max-w-md px-4 pb-4">
             <div className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-2xl flex gap-3">
               <Button className="flex-1 bg-gradient-to-r from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] hover:from-[var(--theme-accent)] hover:to-[var(--theme-accent-dark)] text-black font-medium rounded-full h-12 shadow-lg shadow-[var(--theme-accent)]/20">
@@ -1308,8 +1375,9 @@ export function SessionInvite({
               </Button>
             </div>
           </div>
-        </motion.div>
-      )}
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

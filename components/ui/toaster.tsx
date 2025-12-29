@@ -31,11 +31,11 @@ export function Toaster() {
                     {title}
                   </ToastTitle>
                 )}
-                {description && (
+              {description && (
                   <ToastDescription className={isSuccess ? 'text-[13px]' : undefined}>
                     {description}
                   </ToastDescription>
-                )}
+              )}
               </div>
             </div>
             {action}

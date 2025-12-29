@@ -47,7 +47,7 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
 
   return (
     <>
-      <nav className="fixed top-0 left-0 right-0 z-50 bg-white/80 dark:bg-black/40 backdrop-blur-xl border-b border-gray-200/50 dark:border-white/5 shadow-sm">
+      <nav className="sticky top-0 z-50 bg-white/80 dark:bg-black/40 backdrop-blur-xl border-b border-gray-200/50 dark:border-white/5 shadow-sm">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-14 flex items-center justify-between">
           <Link href="/" className="text-gray-900 dark:text-white font-semibold tracking-widest text-sm hover:text-gray-700 dark:hover:text-white/80 transition-colors">
             RESERV
@@ -63,8 +63,8 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
             )}
             {authUser ? (
               <>
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
                     <button className="flex items-center gap-2 text-gray-700 dark:text-white/70 hover:text-gray-900 dark:hover:text-white transition-colors">
                     <Avatar className="h-7 w-7 border border-gray-300 dark:border-white/20">
                       <AvatarFallback className="bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-white text-xs font-medium">
@@ -72,34 +72,34 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
                       </AvatarFallback>
                     </Avatar>
                       <span className="text-sm font-medium hidden sm:inline-block max-w-[120px] truncate text-gray-900 dark:text-white">
-                        {displayName}
-                      </span>
-                    </button>
-                  </DropdownMenuTrigger>
+                      {displayName}
+                    </span>
+                  </button>
+                </DropdownMenuTrigger>
                   <DropdownMenuContent align="end" className="bg-white dark:bg-slate-900 border-gray-200 dark:border-white/10 text-gray-900 dark:text-white min-w-[180px]">
                     <DropdownMenuItem disabled className="text-gray-500 dark:text-white/60 cursor-default">
-                      Profile
-                    </DropdownMenuItem>
+                    Profile
+                  </DropdownMenuItem>
                     <DropdownMenuSeparator className="bg-gray-200 dark:bg-white/10" />
-                    <DropdownMenuItem
-                      onClick={handleSignOut}
+                  <DropdownMenuItem
+                    onClick={handleSignOut}
                       className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-white/10 cursor-pointer focus:bg-gray-100 dark:focus:bg-white/10"
-                    >
-                      <LogOut className="mr-2 h-4 w-4" />
-                      Sign out
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                  >
+                    <LogOut className="mr-2 h-4 w-4" />
+                    Sign out
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
                 <ThemeToggle />
               </>
             ) : (
               <>
-                <button
-                  onClick={() => setLoginDialogOpen(true)}
+              <button
+                onClick={() => setLoginDialogOpen(true)}
                   className="text-gray-700 dark:text-white/70 hover:text-gray-900 dark:hover:text-white text-sm font-medium transition-colors"
-                >
-                  Login
-                </button>
+              >
+                Login
+              </button>
                 <ThemeToggle />
               </>
             )}

@@ -42,11 +42,11 @@ export default function RootLayout({
     <html lang="en" suppressHydrationWarning>
       <body className={`font-sans antialiased`}>
         <ThemeProvider>
-          <AuthProvider>
-            {children}
-            <Toaster />
-            <Analytics />
-          </AuthProvider>
+        <AuthProvider>
+          {children}
+          <Toaster />
+          <Analytics />
+        </AuthProvider>
         </ThemeProvider>
       </body>
     </html>
