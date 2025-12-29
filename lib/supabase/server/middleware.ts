@@ -94,6 +94,9 @@ export async function updateSession(request: NextRequest) {
     }
   );
 
+  // Refresh session to update cookies if needed
+  await supabase.auth.getUser();
+
   for (const route of protectedRoutes) {
     if (request.nextUrl.pathname.startsWith(route.path)) {
       const unauthorizedPath = await protectPath(
@@ -111,5 +114,5 @@ export async function updateSession(request: NextRequest) {
     }
   }
 
-  return NextResponse.next();
+  return supabaseResponse;
 }
