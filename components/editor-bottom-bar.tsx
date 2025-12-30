@@ -3,7 +3,7 @@
 import { useState, useEffect as ReactUseEffect } from "react"
 import * as React from "react"
 import { motion } from "framer-motion"
-import { Palette, Eye, Sun, Moon } from "lucide-react"
+import { Palette, Eye, Sun, Moon, FileText } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerDescription } from "@/components/ui/drawer"
@@ -15,6 +15,7 @@ interface EditorBottomBarProps {
   onPreview: () => void
   onPublish?: () => void
   onSaveDraft?: () => void
+  onDrafts?: () => void
   theme?: string
   onThemeChange?: (theme: string) => void
   uiMode: "dark" | "light"
@@ -25,6 +26,7 @@ export function EditorBottomBar({
   onPreview,
   onPublish,
   onSaveDraft,
+  onDrafts,
   theme,
   onThemeChange,
   uiMode,
@@ -107,6 +109,16 @@ export function EditorBottomBar({
                   {uiMode === "dark" ? "Light" : "Dark"}
                 </span>
               </button>
+
+              {/* Drafts Button */}
+              {onDrafts && (
+                <button onClick={onDrafts} className="flex flex-col items-center gap-1.5 group">
+                  <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
+                    <FileText className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
+                  </div>
+                  <span className="text-xs text-white/60 group-hover:text-white/80 transition-colors">Drafts</span>
+                </button>
+              )}
 
               {/* Preview Button */}
               <button onClick={onPreview} className="flex flex-col items-center gap-1.5 group">

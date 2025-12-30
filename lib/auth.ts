@@ -13,6 +13,9 @@ export const handleGoogleOAuth = async () => {
 
   const supabase = createClient()
   
+  // Use window.location.origin for Vercel compatibility - automatically works on any domain
+  // (localhost for dev, *.vercel.app for production, custom domains, etc.)
+  // This ensures the redirect URL is always correct without hardcoding
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: 'google',
     options: {

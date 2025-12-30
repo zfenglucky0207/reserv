@@ -35,6 +35,10 @@ import { EditorBottomBar } from "./editor-bottom-bar"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { MobileCalendar } from "@/components/ui/mobile-calendar"
 import { TimePickerWheels } from "@/components/ui/time-picker-wheels"
+import { DraftNameDialog } from "@/components/drafts/draft-name-dialog"
+import { DraftsDialog } from "@/components/drafts/drafts-dialog"
+import type { DraftData, DraftSummary } from "@/app/actions/drafts"
+import { listDrafts, saveDraft, getDraft, deleteDraft, overwriteDraft } from "@/app/actions/drafts"
 
 // Default cover background colors by sport (when no cover image is set)
 const DEFAULT_COVER_BG: Record<string, string> = {
@@ -131,6 +135,14 @@ export function SessionInvite({
   const [scrolled, setScrolled] = useState(false)
   const [loginDialogOpen, setLoginDialogOpen] = useState(false)
   const { toast } = useToast()
+
+  // Draft state
+  const [draftsOpen, setDraftsOpen] = useState(false)
+  const [draftNameOpen, setDraftNameOpen] = useState(false)
+  const [draftName, setDraftName] = useState("")
+  const [drafts, setDrafts] = useState<DraftSummary[]>([])
+  const [isOverwriteMode, setIsOverwriteMode] = useState(false)
+  const [loadingDrafts, setLoadingDrafts] = useState(false)
 
   // Placeholder constants for validation
   const PLACEHOLDERS = {
@@ -1016,18 +1028,241 @@ export function SessionInvite({
     }
   }
 
-  const handleSaveDraft = () => {
-    // TODO: Implement save draft functionality
-    toast({
-      title: "Draft saved",
-      description: "Your changes have been saved as a draft.",
-      variant: "success",
-    })
+  // Build draft payload from current form state
+  const buildDraftPayload = (): DraftData => {
+    return {
+      selectedSport,
+      theme,
+      effects,
+      optimisticCoverUrl,
+      eventTitle,
+      titleFont,
+      eventDate,
+      eventLocation,
+      eventMapUrl,
+      eventPrice,
+      eventCapacity,
+      hostName,
+      eventDescription,
+      bankName,
+      accountNumber,
+      accountName,
+      paymentNotes,
+      paymentQrImage,
+    }
   }
+
+  // Apply draft payload to form state
+  const applyDraftPayload = (payload: DraftData) => {
+    setSelectedSport(payload.selectedSport)
+    setTheme(payload.theme)
+    setEffects(payload.effects)
+    setOptimisticCoverUrl(payload.optimisticCoverUrl)
+    setEventTitle(payload.eventTitle)
+    // Validate titleFont is a valid key before setting
+    if (payload.titleFont in TITLE_FONTS) {
+      setTitleFont(payload.titleFont as keyof typeof TITLE_FONTS)
+    }
+    setEventDate(payload.eventDate)
+    setEventLocation(payload.eventLocation)
+    setEventMapUrl(payload.eventMapUrl)
+    setEventPrice(payload.eventPrice)
+    setEventCapacity(payload.eventCapacity)
+    setHostName(payload.hostName)
+    setEventDescription(payload.eventDescription)
+    setBankName(payload.bankName)
+    setAccountNumber(payload.accountNumber)
+    setAccountName(payload.accountName)
+    setPaymentNotes(payload.paymentNotes)
+    setPaymentQrImage(payload.paymentQrImage)
+  }
+
+  // Refresh drafts list
+  const refreshDrafts = async () => {
+    setLoadingDrafts(true)
+    try {
+      const result = await listDrafts()
+      if (result.ok) {
+        setDrafts(result.drafts)
+      } else {
+        console.error("Failed to load drafts:", result.error)
+      }
+    } catch (error) {
+      console.error("Error loading drafts:", error)
+    } finally {
+      setLoadingDrafts(false)
+    }
+  }
+
+  // Handle save draft click
+  const handleSaveDraftClick = () => {
+    if (!isAuthenticated) {
+      // Store intent to save draft after login
+      if (typeof window !== "undefined") {
+        sessionStorage.setItem("pending_save_draft", "true")
+      }
+      setLoginDialogOpen(true)
+      return
+    }
+
+    // User is authenticated, open name dialog
+    setDraftNameOpen(true)
+  }
+
+  // Confirm save draft
+  const confirmSaveDraft = async (name: string) => {
+    try {
+      const payload = buildDraftPayload()
+      const result = await saveDraft(name, payload)
+
+      if (result.ok) {
+        toast({
+          title: "Draft saved",
+          description: "Your draft has been saved successfully.",
+          variant: "success",
+        })
+        setDraftNameOpen(false)
+        setDraftName("")
+        // Refresh drafts list if dialog is open
+        if (draftsOpen) {
+          await refreshDrafts()
+        }
+      } else {
+        if (result.code === "LIMIT_REACHED") {
+          // Open drafts dialog in overwrite mode
+          setIsOverwriteMode(true)
+          setDraftNameOpen(false)
+          await refreshDrafts()
+          setDraftsOpen(true)
+        } else {
+          toast({
+            title: "Failed to save draft",
+            description: result.error,
+            variant: "destructive",
+          })
+        }
+      }
+    } catch (error: any) {
+      toast({
+        title: "Failed to save draft",
+        description: error?.message || "An error occurred while saving the draft.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Handle load draft
+  const handleLoadDraft = async (draftId: string) => {
+    try {
+      const result = await getDraft(draftId)
+      if (result.ok) {
+        applyDraftPayload(result.draft.data)
+        toast({
+          title: "Draft loaded",
+          description: `"${result.draft.name}" has been loaded.`,
+          variant: "success",
+        })
+      } else {
+        toast({
+          title: "Failed to load draft",
+          description: result.error,
+          variant: "destructive",
+        })
+      }
+    } catch (error: any) {
+      toast({
+        title: "Failed to load draft",
+        description: error?.message || "An error occurred while loading the draft.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Handle delete draft
+  const handleDeleteDraft = async (draftId: string) => {
+    try {
+      const result = await deleteDraft(draftId)
+      if (result.ok) {
+        toast({
+          title: "Draft deleted",
+          description: "The draft has been deleted.",
+          variant: "success",
+        })
+        await refreshDrafts()
+      } else {
+        toast({
+          title: "Failed to delete draft",
+          description: result.error,
+          variant: "destructive",
+        })
+      }
+    } catch (error: any) {
+      toast({
+        title: "Failed to delete draft",
+        description: error?.message || "An error occurred while deleting the draft.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Handle overwrite draft
+  const handleOverwriteDraft = async (draftId: string) => {
+    try {
+      const payload = buildDraftPayload()
+      const result = await overwriteDraft(draftId, payload)
+
+      if (result.ok) {
+        toast({
+          title: "Draft updated",
+          description: "Your draft has been updated successfully.",
+          variant: "success",
+        })
+        setIsOverwriteMode(false)
+        setDraftsOpen(false)
+        await refreshDrafts()
+      } else {
+        toast({
+          title: "Failed to update draft",
+          description: result.error,
+          variant: "destructive",
+        })
+      }
+    } catch (error: any) {
+      toast({
+        title: "Failed to update draft",
+        description: error?.message || "An error occurred while updating the draft.",
+        variant: "destructive",
+      })
+    }
+  }
+
+  // Handle drafts dialog open
+  const handleDraftsOpen = async () => {
+    await refreshDrafts()
+    setIsOverwriteMode(false)
+    setDraftsOpen(true)
+  }
+
+  const handleSaveDraft = handleSaveDraftClick
 
   const handleLoginSuccess = () => {
     setLoginDialogOpen(false)
-    // The useEffect will handle the pending publish
+    // Check for pending actions after login
+    if (typeof window !== "undefined") {
+      const pendingPublish = sessionStorage.getItem("pending_publish")
+      const pendingSaveDraft = sessionStorage.getItem("pending_save_draft")
+      
+      if (pendingPublish === "true") {
+        sessionStorage.removeItem("pending_publish")
+        // Publish will be handled by useEffect
+      }
+      
+      if (pendingSaveDraft === "true") {
+        sessionStorage.removeItem("pending_save_draft")
+        // Open draft name dialog
+        setDraftNameOpen(true)
+      }
+    }
   }
 
   // Reusable class tokens based on uiMode
@@ -2176,10 +2411,11 @@ export function SessionInvite({
           onPreview={() => handlePreviewModeChange(true)}
           onPublish={handlePublish}
           onSaveDraft={handleSaveDraft}
+          onDrafts={handleDraftsOpen}
           theme={theme}
           onThemeChange={setTheme}
-              uiMode={uiMode}
-              onUiModeChange={setUiMode}
+          uiMode={uiMode}
+          onUiModeChange={setUiMode}
         />
           </motion.div>
       )}
@@ -2190,6 +2426,32 @@ export function SessionInvite({
         open={loginDialogOpen}
         onOpenChange={setLoginDialogOpen}
         onContinueAsGuest={handleLoginSuccess}
+      />
+
+      {/* Draft Name Dialog */}
+      <DraftNameDialog
+        open={draftNameOpen}
+        onOpenChange={setDraftNameOpen}
+        onSave={confirmSaveDraft}
+        uiMode={uiMode}
+      />
+
+      {/* Drafts Dialog */}
+      <DraftsDialog
+        open={draftsOpen}
+        onOpenChange={(open) => {
+          setDraftsOpen(open)
+          if (!open) {
+            setIsOverwriteMode(false)
+          }
+        }}
+        drafts={drafts}
+        isOverwriteMode={isOverwriteMode}
+        onLoad={handleLoadDraft}
+        onDelete={handleDeleteDraft}
+        onOverwrite={handleOverwriteDraft}
+        uiMode={uiMode}
+        isLoading={loadingDrafts}
       />
 
       {/* Sticky RSVP Dock - Only show in preview mode or when not in edit mode */}
