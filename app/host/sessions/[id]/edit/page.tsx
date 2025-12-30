@@ -1,4 +1,4 @@
-import { SessionInvite } from "@/components/session-invite"
+import { HostSessionEditClient } from "@/components/host/host-session-edit-client"
 import { createClient, getUserId } from "@/lib/supabase/server/server"
 import { notFound, redirect } from "next/navigation"
 import { Suspense } from "react"
@@ -9,9 +9,11 @@ export const dynamic = "force-dynamic"
 async function HostSessionEditContent({
   sessionId,
   isPreviewMode,
+  forceEditMode = false,
 }: {
   sessionId: string
   isPreviewMode: boolean
+  forceEditMode?: boolean
 }) {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
@@ -38,18 +40,28 @@ async function HostSessionEditContent({
     cover_url: session.cover_url,
     hasCoverUrl: !!session.cover_url,
     status: session.status,
-    public_code: session.public_code
+    public_code: session.public_code,
+    forceEditMode
   })
 
   // Determine if session is published
   const isPublished = session.status === "open" && !!session.public_code
 
+  // If forceEditMode is true, always start in edit mode (even if published)
+  const shouldStartInEditMode = forceEditMode || !isPublished
+  
+  console.log(`[HostSessionEditContent] Edit mode decision:`, {
+    forceEditMode,
+    isPublished,
+    shouldStartInEditMode
+  })
+
   return (
-    <SessionInvite
+    <HostSessionEditClient
       sessionId={sessionId}
       initialCoverUrl={session.cover_url || null}
       initialSport={session.sport || null}
-      initialEditMode={!isPublished} // If published, start in analytics view (edit mode = false)
+      initialEditMode={shouldStartInEditMode} // Force edit mode if requested, otherwise analytics for published
       initialPreviewMode={isPreviewMode && !isPublished} // Only preview if not published
       initialTitle={session.title || null}
       initialDate={null} // TODO: Format from session.start_at if needed
@@ -59,6 +71,7 @@ async function HostSessionEditContent({
       initialHostName={session.host_name || null}
       initialDescription={session.description || null}
       initialIsPublished={isPublished} // Pass published status
+      initialSessionStatus={session.status} // Pass session status for draft update logic
     />
   )
 }
@@ -73,11 +86,14 @@ export default async function HostSessionEditPage({
   const { id: sessionId } = await params
   const { mode } = await searchParams
   const isPreviewMode = mode === "preview"
+  const forceEditMode = mode === "edit"
+  
+  console.log(`[HostSessionEditPage] Query params:`, { mode, isPreviewMode, forceEditMode })
 
   return (
     <main className="min-h-screen sporty-bg">
       <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
-        <HostSessionEditContent sessionId={sessionId} isPreviewMode={isPreviewMode} />
+        <HostSessionEditContent sessionId={sessionId} isPreviewMode={isPreviewMode} forceEditMode={forceEditMode} />
       </Suspense>
     </main>
   )

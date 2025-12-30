@@ -109,6 +109,7 @@ interface SessionInviteProps {
   onJoinClick?: () => void // RSVP handler for public view
   onDeclineClick?: () => void // RSVP handler for public view
   initialIsPublished?: boolean // New prop to indicate if session is published
+  initialSessionStatus?: "draft" | "open" | "closed" | "completed" | "cancelled" // Session status for draft update logic
 }
 
 export function SessionInvite({
@@ -130,6 +131,7 @@ export function SessionInvite({
   onJoinClick,
   onDeclineClick,
   initialIsPublished = false,
+  initialSessionStatus,
 }: SessionInviteProps) {
   console.log(`[SessionInvite] Render:`, { sessionId, initialCoverUrl, initialSport, initialEditMode, initialPreviewMode })
   
@@ -143,10 +145,72 @@ export function SessionInvite({
   const [isEditMode, setIsEditMode] = useState(initialEditMode)
   const [isPreviewMode, setIsPreviewMode] = useState(initialPreviewMode)
   const [isPublished, setIsPublished] = useState(initialIsPublished)
+  const [sessionStatus, setSessionStatus] = useState<"draft" | "open" | "closed" | "completed" | "cancelled" | undefined>(initialSessionStatus)
   const [actualSessionId, setActualSessionId] = useState<string | undefined>(sessionId) // Store actual session ID (may be updated after creation)
   const [scrolled, setScrolled] = useState(false)
   const [loginDialogOpen, setLoginDialogOpen] = useState(false)
+  
+  // Sync sessionStatus when initialSessionStatus prop changes
+  useEffect(() => {
+    if (initialSessionStatus !== undefined) {
+      setSessionStatus(initialSessionStatus)
+    }
+  }, [initialSessionStatus])
+  
+  // Helper to check if string is valid UUID
+  const isValidUUID = (str: string | undefined): boolean => {
+    if (!str) return false
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    return uuidRegex.test(str)
+  }
+  
+  // Determine if we're editing an existing draft session (must use sessionStatus from DB)
+  const isEditingDraft = sessionStatus === "draft" && actualSessionId && isValidUUID(actualSessionId)
+  
+  // Button label: "Update draft" if editing draft, "Save draft" otherwise
+  const saveDraftLabel = sessionStatus === "draft" ? "Update draft" : "Save draft"
+  
   const { toast } = useToast()
+
+  // Handle unpublish
+  const handleUnpublish = async () => {
+    if (!actualSessionId) return
+
+    try {
+      const { unpublishSession } = await import("@/app/host/sessions/[id]/actions")
+      const result = await unpublishSession(actualSessionId)
+
+      if (!result.ok) {
+        toast({
+          title: "Unpublish failed",
+          description: result.error || "Failed to unpublish invite. Try again.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Update local state
+      setIsPublished(false)
+      setIsEditMode(true)
+      setIsPreviewMode(false)
+
+      toast({
+        title: "Invite unpublished",
+        description: "Back to edit mode.",
+        variant: "default",
+      })
+
+      // Authoritative refresh: refetch server data
+      router.refresh()
+    } catch (error: any) {
+      console.error("[handleUnpublish] Error:", { sessionId: actualSessionId, error })
+      toast({
+        title: "Unpublish failed",
+        description: error.message || "Failed to unpublish invite. Try again.",
+        variant: "destructive",
+      })
+    }
+  }
 
   // Update actualSessionId when sessionId prop changes
   useEffect(() => {
@@ -1132,6 +1196,58 @@ export function SessionInvite({
     }
   }
 
+  // Build session patch from current form state (for updating draft sessions)
+  const buildSessionPatch = () => {
+    // Get host name for update
+    const hostNameForUpdate = displayHostName || getUserProfileName() || null
+
+    // Map sport display name to enum value
+    const sportEnumMap: Record<string, "badminton" | "pickleball" | "volleyball" | "other"> = {
+      "Badminton": "badminton",
+      "Pickleball": "pickleball",
+      "Volleyball": "volleyball",
+      "Futsal": "other",
+    }
+    const sportEnum = sportEnumMap[selectedSport] || "badminton"
+
+    // Parse eventDate to get start_at and end_at ISO strings
+    let startAt: string | undefined = undefined
+    let endAt: string | null = null
+
+    if (eventDate) {
+      const parsed = parseEventDate(eventDate)
+      if (parsed) {
+        const startDate = new Date(parsed.date)
+        // Convert hour to 24h format
+        let hour24 = parsed.hour
+        if (parsed.ampm === "PM" && parsed.hour !== 12) {
+          hour24 = parsed.hour + 12
+        } else if (parsed.ampm === "AM" && parsed.hour === 12) {
+          hour24 = 0
+        }
+        startDate.setHours(hour24, parsed.minute, 0, 0)
+        startAt = startDate.toISOString()
+
+        // Calculate end_at
+        const endDate = new Date(startDate)
+        endDate.setHours(endDate.getHours() + parsed.durationHours)
+        endAt = endDate.toISOString()
+      }
+    }
+
+    return {
+      title: eventTitle || undefined,
+      description: eventDescription || null,
+      cover_url: optimisticCoverUrl || null,
+      sport: sportEnum,
+      location: eventLocation || null,
+      start_at: startAt,
+      end_at: endAt,
+      capacity: eventCapacity || null,
+      host_name: hostNameForUpdate,
+    }
+  }
+
   // Build draft payload from current form state
   const buildDraftPayload = (): DraftData => {
     return {
@@ -1199,7 +1315,7 @@ export function SessionInvite({
   }
 
   // Handle save draft click
-  const handleSaveDraftClick = () => {
+  const handleSaveDraftClick = async () => {
     if (!isAuthenticated) {
       // Store intent to save draft after login
       if (typeof window !== "undefined") {
@@ -1209,7 +1325,43 @@ export function SessionInvite({
       return
     }
 
-    // User is authenticated, open name dialog
+    // If editing an existing draft session (status === "draft"), update it directly
+    if (sessionStatus === "draft" && actualSessionId && isValidUUID(actualSessionId)) {
+      try {
+        const patch = buildSessionPatch()
+        const { updateDraftSession } = await import("@/app/host/sessions/[id]/actions")
+        const result = await updateDraftSession(actualSessionId, patch)
+
+        if (!result.ok) {
+          toast({
+            title: "Failed to update draft",
+            description: result.error || "Failed to update draft. Please try again.",
+            variant: "destructive",
+          })
+          return
+        }
+
+        toast({
+          title: "Draft updated",
+          description: "Your draft has been updated successfully.",
+          variant: "default",
+        })
+
+        // Authoritative refresh: refetch server data
+        router.refresh()
+        return
+      } catch (error: any) {
+        console.error("[handleSaveDraftClick] Error updating draft:", error)
+        toast({
+          title: "Failed to update draft",
+          description: error?.message || "Failed to update draft. Please try again.",
+          variant: "destructive",
+        })
+        return
+      }
+    }
+
+    // User is authenticated, but not editing a draft - open name dialog for new draft
     setDraftNameOpen(true)
   }
 
@@ -1261,6 +1413,31 @@ export function SessionInvite({
       const result = await getDraft(draftId)
       if (result.ok) {
         applyDraftPayload(result.draft.data)
+        
+        // If we have an actualSessionId, check if it's a draft session
+        // and set the status accordingly so the button shows "Update draft"
+        if (actualSessionId && isValidUUID(actualSessionId)) {
+          try {
+            const { createClient } = await import("@/lib/supabase/client")
+            const supabase = createClient()
+            const { data: session, error: sessionError } = await supabase
+              .from("sessions")
+              .select("status")
+              .eq("id", actualSessionId)
+              .single()
+            
+            if (!sessionError && session && session.status === "draft") {
+              setSessionStatus("draft")
+            } else if (!sessionError && session) {
+              // If session exists but is not a draft, set the actual status
+              setSessionStatus(session.status as "draft" | "open" | "closed" | "completed" | "cancelled")
+            }
+          } catch (error) {
+            // If we can't fetch the session, that's okay - it might not exist yet
+            console.log("[handleLoadDraft] Could not fetch session status:", error)
+          }
+        }
+        
         toast({
           title: "Draft loaded",
           description: `"${result.draft.name}" has been loaded.`,
@@ -1349,6 +1526,9 @@ export function SessionInvite({
 
   const handleSaveDraft = handleSaveDraftClick
 
+  // Button label is already set above based on sessionStatus
+  // const saveDraftLabel = sessionStatus === "draft" ? "Update draft" : "Save draft"
+
   const handleLoginSuccess = () => {
     setLoginDialogOpen(false)
     // Check for pending actions after login
@@ -1386,7 +1566,8 @@ export function SessionInvite({
 
   // If published, show analytics view instead of edit/preview
   // But don't show analytics if share sheet is open (let user see the share sheet first)
-  if (isPublished && actualSessionId && !demoMode && !publishShareSheetOpen) {
+  // Or if edit mode is explicitly requested (via ?mode=edit query param)
+  if (isPublished && actualSessionId && !demoMode && !publishShareSheetOpen && !isEditMode) {
     return (
       <div className="min-h-screen sporty-bg">
         <TopNav showCreateNow={false} />
@@ -1401,14 +1582,21 @@ export function SessionInvite({
             transition={{ duration: 0.2, ease: "easeOut" }}
           >
             <EditorBottomBar
-              onPreview={() => {}}
+              onPreview={
+                actualSessionId
+                  ? () => {
+                      router.push(`/session/${actualSessionId}?from=analytics`)
+                    }
+                  : () => {}
+              }
               onEdit={
                 actualSessionId
                   ? () => {
-                      router.push(`/host/sessions/${actualSessionId}/edit`)
+                      router.push(`/host/sessions/${actualSessionId}/edit?mode=edit`)
                     }
                   : undefined
               }
+              onUnpublish={actualSessionId ? handleUnpublish : undefined}
               theme={theme}
               onThemeChange={setTheme}
               uiMode={uiMode}
@@ -2557,6 +2745,7 @@ export function SessionInvite({
           onThemeChange={setTheme}
           uiMode={uiMode}
           onUiModeChange={setUiMode}
+          saveDraftLabel={saveDraftLabel}
           />
           </motion.div>
       ) : null}

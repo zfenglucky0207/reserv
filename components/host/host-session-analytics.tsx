@@ -2,11 +2,16 @@
 
 import { useState, useEffect } from "react"
 import { motion } from "framer-motion"
-import { PieChart } from "reaviz"
 import { Card } from "@/components/ui/card"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Button } from "@/components/ui/button"
+import { Switch } from "@/components/ui/switch"
+import { Label } from "@/components/ui/label"
+import { Badge } from "@/components/ui/badge"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
-import { Eye, Users, UserCheck, UserX, Clock } from "lucide-react"
+import { useToast } from "@/hooks/use-toast"
+import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight } from "lucide-react"
+import { formatDistanceToNow, format, isPast, isFuture, parseISO } from "date-fns"
 
 interface HostSessionAnalyticsProps {
   sessionId: string
@@ -29,11 +34,26 @@ interface AnalyticsData {
   declinedList: Array<{ id: string; display_name: string; created_at: string }>
   viewedCount: number
   pricePerPerson: number | null
+  sessionStatus: string
+  startAt: string | null
+  hostSlug: string | null
+  publicCode: string | null
 }
 
 export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalyticsProps) {
+  const { toast } = useToast()
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [unpublishDialogOpen, setUnpublishDialogOpen] = useState(false)
+  const [isUnpublishing, setIsUnpublishing] = useState(false)
+  
+  // Quick settings local state (TODO: persist to DB)
+  const [quickSettings, setQuickSettings] = useState({
+    acceptNewJoins: true,
+    requirePaymentProof: false,
+    autoCloseWhenFull: true,
+    showGuestListPublicly: true,
+  })
 
   useEffect(() => {
     const fetchAnalytics = async () => {
@@ -48,7 +68,16 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             declinedList: result.declinedList,
             viewedCount: result.viewedCount,
             pricePerPerson: result.pricePerPerson,
+            sessionStatus: result.sessionStatus,
+            startAt: result.startAt,
+            hostSlug: result.hostSlug,
+            publicCode: result.publicCode,
           })
+          
+          // Initialize requirePaymentProof based on price
+          if (result.pricePerPerson && result.pricePerPerson > 0) {
+            setQuickSettings((prev) => ({ ...prev, requirePaymentProof: true }))
+          }
         }
       } catch (error) {
         console.error("Failed to fetch analytics:", error)
@@ -64,12 +93,86 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
     ? "bg-black/30 border-white/20 text-white backdrop-blur-sm"
     : "bg-white/70 border-black/10 text-black backdrop-blur-sm"
 
+  // Format time urgency
+  const getTimeUrgency = (startAt: string | null): string => {
+    if (!startAt) return "Date TBD"
+    try {
+      const startDate = parseISO(startAt)
+      if (isPast(startDate)) {
+        return "Ended"
+      }
+      if (isFuture(startDate)) {
+        const distance = formatDistanceToNow(startDate, { addSuffix: true })
+        if (distance.includes("hour") || distance.includes("minute")) {
+          return `Starts ${distance}`
+        }
+        if (distance.includes("day")) {
+          const days = Math.ceil((startDate.getTime() - Date.now()) / (1000 * 60 * 60 * 24))
+          if (days === 1) return "Tomorrow"
+          if (days <= 7) return `In ${days} days`
+        }
+        return format(startDate, "MMM d, h:mm a")
+      }
+      return "Now"
+    } catch {
+      return "Date TBD"
+    }
+  }
+
+  // Get status badge label and color
+  const getStatusBadge = (status: string) => {
+    switch (status) {
+      case "open":
+        return { label: "Live", color: "bg-red-500/20 text-red-400 border-red-500/30" }
+      case "draft":
+        return { label: "Draft", color: "bg-gray-500/20 text-gray-400 border-gray-500/30" }
+      case "closed":
+        return { label: "Closed", color: "bg-gray-500/20 text-gray-400 border-gray-500/30" }
+      default:
+        return { label: status, color: "bg-gray-500/20 text-gray-400 border-gray-500/30" }
+    }
+  }
+
+  // Handle unpublish
+  const handleUnpublish = async () => {
+    setIsUnpublishing(true)
+    try {
+      const { unpublishSession } = await import("@/app/host/sessions/[id]/actions")
+      const result = await unpublishSession(sessionId)
+      
+      if (!result.ok) {
+        toast({
+          title: "Unpublish failed",
+          description: result.error || "Failed to unpublish session.",
+          variant: "destructive",
+        })
+        return
+      }
+      
+      toast({
+        title: "Invite unpublished",
+        description: "The invite has been taken offline.",
+      })
+      
+      setUnpublishDialogOpen(false)
+      window.location.reload()
+    } catch (error: any) {
+      toast({
+        title: "Unpublish failed",
+        description: error?.message || "Failed to unpublish session.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsUnpublishing(false)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="text-center">
           <div className="w-8 h-8 border-4 border-lime-500 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
-          <p className={cn("text-sm", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Loading analytics...</p>
+          <p className={cn("text-sm", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Loading session control...</p>
         </div>
       </div>
     )
@@ -79,282 +182,284 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <p className={cn("text-sm", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-          Failed to load analytics
+          Failed to load session
         </p>
       </div>
     )
   }
 
-  // Prepare pie chart data
-  const attendanceData = [
-    { key: "Accepted", data: analytics.attendance.accepted },
-    { key: "Remaining", data: Math.max(0, analytics.attendance.capacity - analytics.attendance.accepted) },
-  ].filter((item) => item.data > 0)
-
-  const paymentData = analytics.payments.total > 0
-    ? [
-        { key: "Collected", data: analytics.payments.collected },
-        { key: "Remaining", data: Math.max(0, analytics.payments.total - analytics.payments.collected) },
-      ].filter((item) => item.data > 0)
-    : []
+  const statusBadge = getStatusBadge(analytics.sessionStatus)
+  const spotsLeft = Math.max(0, analytics.attendance.capacity - analytics.attendance.accepted)
 
   return (
     <div className={cn("min-h-screen", uiMode === "dark" ? "bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900" : "bg-white")}>
-      <div className="space-y-6 p-4 pb-24">
-      {/* Pie Charts Section */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4 }}
-        className="space-y-4"
-      >
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Attendance Pie Chart */}
-          <Card className={cn("p-4", glassCard)}>
-            <h3 className={cn("text-sm font-semibold mb-3", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
-              Attendance
-            </h3>
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-full h-48 flex items-center justify-center">
-                {analytics.attendance.capacity > 0 ? (
-                  <PieChart
-                    data={attendanceData}
-                    height={192}
-                    colorScheme={uiMode === "dark" ? ["#84cc16", "#64748b"] : ["#84cc16", "#cbd5e1"]}
-                  />
-                ) : (
-                  <div className={cn("text-sm", uiMode === "dark" ? "text-white/40" : "text-black/40")}>
-                    No capacity set
-                  </div>
-                )}
-              </div>
-              <div className="text-center">
-                <p className={cn("text-2xl font-bold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  {analytics.attendance.accepted}/{analytics.attendance.capacity || 0}
-                </p>
-                <p className={cn("text-xs mt-1", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-                  Accepted / Capacity
-                </p>
-              </div>
-            </div>
-          </Card>
-
-          {/* Payment Pie Chart */}
-          <Card className={cn("p-4", glassCard)}>
-            <h3 className={cn("text-sm font-semibold mb-3", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
-              Payments
-            </h3>
-            <div className="flex flex-col items-center gap-3">
-              <div className="w-full h-48 flex items-center justify-center">
-                {analytics.payments.total > 0 ? (
-                  <PieChart
-                    data={paymentData}
-                    height={192}
-                    colorScheme={uiMode === "dark" ? ["#10b981", "#64748b"] : ["#10b981", "#cbd5e1"]}
-                  />
-                ) : (
-                  <div className={cn("text-sm", uiMode === "dark" ? "text-white/40" : "text-black/40")}>
-                    No payments
-                  </div>
-                )}
-              </div>
-              <div className="text-center">
-                <p className={cn("text-2xl font-bold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  RM{analytics.payments.collected.toFixed(0)}/{analytics.payments.total.toFixed(0)}
-                </p>
-                <p className={cn("text-xs mt-1", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-                  Collected / Total
-                </p>
-              </div>
-            </div>
-          </Card>
+      <div className="space-y-4 p-4 pb-24">
+        {/* Page Title */}
+        <div className="mb-2">
+          <h1 className={cn("text-2xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
+            Session control
+          </h1>
         </div>
-      </motion.div>
 
-      {/* Live Activity Section */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.1 }}
-      >
-        <Card className={cn("p-4", glassCard)}>
-          <h3 className={cn("text-sm font-semibold mb-4", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
-            Live Activity
-          </h3>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center",
-                  uiMode === "dark" ? "bg-white/10" : "bg-black/10"
-                )}
-              >
-                <Eye className={cn("w-5 h-5", uiMode === "dark" ? "text-white/80" : "text-black/80")} />
+        {/* SECTION 1: Session Status */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4 }}
+        >
+          <Card className={cn("p-4", glassCard)}>
+            <div className="space-y-3">
+              {/* Status Badge */}
+              <div className="flex items-center gap-2">
+                <Badge className={cn("px-3 py-1 text-xs font-medium border", statusBadge.color)}>
+                  {statusBadge.label}
+                </Badge>
               </div>
-              <div>
-                <p className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Viewed</p>
-                <p className={cn("text-lg font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  {analytics.viewedCount}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center",
-                  uiMode === "dark" ? "bg-white/10" : "bg-black/10"
-                )}
-              >
-                <Clock className={cn("w-5 h-5", uiMode === "dark" ? "text-white/80" : "text-black/80")} />
-              </div>
-              <div>
-                <p className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Unanswered</p>
-                <p className={cn("text-lg font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  {analytics.attendance.unanswered}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center",
-                  uiMode === "dark" ? "bg-white/10" : "bg-black/10"
-                )}
-              >
-                <UserCheck className={cn("w-5 h-5", uiMode === "dark" ? "text-white/80" : "text-black/80")} />
-              </div>
-              <div>
-                <p className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Accepted</p>
-                <p className={cn("text-lg font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  {analytics.attendance.accepted}
-                </p>
-              </div>
-            </div>
-            <div className="flex items-center gap-3">
-              <div
-                className={cn(
-                  "w-10 h-10 rounded-full flex items-center justify-center",
-                  uiMode === "dark" ? "bg-white/10" : "bg-black/10"
-                )}
-              >
-                <UserX className={cn("w-5 h-5", uiMode === "dark" ? "text-white/80" : "text-black/80")} />
-              </div>
-              <div>
-                <p className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>Declined</p>
-                <p className={cn("text-lg font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-                  {analytics.attendance.declined}
-                </p>
-              </div>
-            </div>
-          </div>
-        </Card>
-      </motion.div>
 
-      {/* Lists Section */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.4, delay: 0.2 }}
-      >
-        <Card className={cn("p-4", glassCard)}>
-          <Tabs defaultValue="accepted" className="w-full">
-            <TabsList className={cn("grid w-full grid-cols-2", uiMode === "dark" ? "bg-white/5" : "bg-black/5")}>
-              <TabsTrigger
-                value="accepted"
-                className={cn(
-                  "data-[state=active]:bg-white/10 data-[state=active]:text-white",
-                  uiMode === "dark" ? "text-white/60" : "text-black/60"
-                )}
-              >
-                Accepted ({analytics.acceptedList.length})
-              </TabsTrigger>
-              <TabsTrigger
-                value="declined"
-                className={cn(
-                  "data-[state=active]:bg-white/10 data-[state=active]:text-white",
-                  uiMode === "dark" ? "text-white/60" : "text-black/60"
-                )}
-              >
-                Declined ({analytics.declinedList.length})
-              </TabsTrigger>
-            </TabsList>
-            <TabsContent value="accepted" className="mt-4 space-y-2">
-              {analytics.acceptedList.length > 0 ? (
-                analytics.acceptedList.map((participant) => (
+              {/* Spots Filled */}
+              <div className="flex items-center justify-between">
+                <span className={cn("text-sm", uiMode === "dark" ? "text-white/70" : "text-black/70")}>
+                  Spots filled
+                </span>
+                <span className={cn("text-sm font-medium", uiMode === "dark" ? "text-white" : "text-black")}>
+                  {analytics.attendance.accepted} / {analytics.attendance.capacity || 0} filled
+                </span>
+              </div>
+
+              {/* Payment State */}
+              <div className="flex items-center justify-between">
+                <span className={cn("text-sm", uiMode === "dark" ? "text-white/70" : "text-black/70")}>
+                  Payment state
+                </span>
+                <span className={cn("text-sm font-medium", uiMode === "dark" ? "text-white" : "text-black")}>
+                  {analytics.payments.total === 0 || !analytics.pricePerPerson
+                    ? "No payments required"
+                    : analytics.payments.paidCount === 0
+                    ? "No payments yet"
+                    : analytics.payments.paidCount < analytics.attendance.accepted
+                    ? `${analytics.attendance.accepted - analytics.payments.paidCount} pending verification`
+                    : "All payments confirmed"}
+                </span>
+              </div>
+
+              {/* Time Urgency */}
+              <div className="flex items-center justify-between">
+                <span className={cn("text-sm", uiMode === "dark" ? "text-white/70" : "text-black/70")}>
+                  Time
+                </span>
+                <span className={cn("text-sm font-medium", uiMode === "dark" ? "text-white" : "text-black")}>
+                  {getTimeUrgency(analytics.startAt)}
+                </span>
+              </div>
+            </div>
+          </Card>
+        </motion.div>
+
+        {/* SECTION 2: Attendees */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.1 }}
+        >
+          <Card className={cn("p-4", glassCard)}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className={cn("text-sm font-semibold", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                Attendees
+              </h3>
+              <span className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+                {analytics.attendance.accepted} going · {spotsLeft} spots left
+              </span>
+            </div>
+            
+            {analytics.acceptedList.length > 0 ? (
+              <div className="flex gap-2 overflow-x-auto pb-2 -mx-1 px-1">
+                {analytics.acceptedList.map((participant) => (
                   <div
                     key={participant.id}
                     className={cn(
-                      "flex items-center justify-between p-3 rounded-lg",
-                      uiMode === "dark" ? "bg-white/5" : "bg-black/5"
+                      "flex-shrink-0 px-3 py-2 rounded-full text-sm font-medium",
+                      uiMode === "dark"
+                        ? "bg-white/10 text-white border border-white/20"
+                        : "bg-black/10 text-black border border-black/20"
                     )}
                   >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={cn(
-                          "w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold",
-                          uiMode === "dark" ? "bg-white/10 text-white" : "bg-black/10 text-black"
-                        )}
-                      >
-                        {participant.display_name.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className={cn("text-sm font-medium", uiMode === "dark" ? "text-white" : "text-black")}>
-                          {participant.display_name}
-                        </p>
-                        <p className={cn("text-xs", uiMode === "dark" ? "text-white/50" : "text-black/50")}>
-                          {new Date(participant.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                    </div>
+                    {participant.display_name}
                   </div>
-                ))
-              ) : (
-                <p className={cn("text-sm text-center py-8", uiMode === "dark" ? "text-white/40" : "text-black/40")}>
-                  No accepted participants yet
+                ))}
+              </div>
+            ) : (
+              <p className={cn("text-sm text-center py-4", uiMode === "dark" ? "text-white/40" : "text-black/40")}>
+                No one has joined yet.
+              </p>
+            )}
+          </Card>
+        </motion.div>
+
+        {/* SECTION 3: Payments (Condensed) */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.2 }}
+        >
+          <Card className={cn("p-4", glassCard)}>
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className={cn("text-sm font-semibold mb-1", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                  Payments
+                </h3>
+                <p className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+                  {analytics.payments.total === 0 || !analytics.pricePerPerson
+                    ? "No payments yet"
+                    : `RM ${analytics.payments.collected.toFixed(0)} collected · ${analytics.payments.paidCount < analytics.attendance.accepted ? analytics.attendance.accepted - analytics.payments.paidCount : 0} pending`}
                 </p>
+              </div>
+              {analytics.payments.total > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    "rounded-full",
+                    uiMode === "dark"
+                      ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                      : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
+                  )}
+                >
+                  Review
+                  <ChevronRight className="w-4 h-4 ml-1" />
+                </Button>
               )}
-            </TabsContent>
-            <TabsContent value="declined" className="mt-4 space-y-2">
-              {analytics.declinedList.length > 0 ? (
-                analytics.declinedList.map((participant) => (
-                  <div
-                    key={participant.id}
-                    className={cn(
-                      "flex items-center justify-between p-3 rounded-lg",
-                      uiMode === "dark" ? "bg-white/5" : "bg-black/5"
-                    )}
-                  >
-                    <div className="flex items-center gap-3">
-                      <div
-                        className={cn(
-                          "w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold",
-                          uiMode === "dark" ? "bg-white/10 text-white" : "bg-black/10 text-black"
-                        )}
-                      >
-                        {participant.display_name.charAt(0).toUpperCase()}
-                      </div>
-                      <div>
-                        <p className={cn("text-sm font-medium", uiMode === "dark" ? "text-white" : "text-black")}>
-                          {participant.display_name}
-                        </p>
-                        <p className={cn("text-xs", uiMode === "dark" ? "text-white/50" : "text-black/50")}>
-                          {new Date(participant.created_at).toLocaleDateString()}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                ))
-              ) : (
-                <p className={cn("text-sm text-center py-8", uiMode === "dark" ? "text-white/40" : "text-black/40")}>
-                  No declined participants
-                </p>
+            </div>
+          </Card>
+        </motion.div>
+
+        {/* SECTION 4: Quick Settings */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.3 }}
+        >
+          <Card className={cn("p-4", glassCard)}>
+            <h3 className={cn("text-sm font-semibold mb-4", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+              Quick settings
+            </h3>
+            <div className="space-y-4">
+              {/* Accept new joins */}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="accept-new" className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                  Accept new joins
+                </Label>
+                <Switch
+                  id="accept-new"
+                  checked={quickSettings.acceptNewJoins}
+                  onCheckedChange={(checked) =>
+                    setQuickSettings((prev) => ({ ...prev, acceptNewJoins: checked }))
+                  }
+                />
+              </div>
+
+              {/* Require payment proof */}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="require-payment" className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                  Require payment proof
+                </Label>
+                <Switch
+                  id="require-payment"
+                  checked={quickSettings.requirePaymentProof}
+                  onCheckedChange={(checked) =>
+                    setQuickSettings((prev) => ({ ...prev, requirePaymentProof: checked }))
+                  }
+                />
+              </div>
+
+              {/* Auto-close when full */}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="auto-close" className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                  Auto-close when full
+                </Label>
+                <Switch
+                  id="auto-close"
+                  checked={quickSettings.autoCloseWhenFull}
+                  onCheckedChange={(checked) =>
+                    setQuickSettings((prev) => ({ ...prev, autoCloseWhenFull: checked }))
+                  }
+                />
+              </div>
+
+              {/* Show guest list publicly */}
+              <div className="flex items-center justify-between">
+                <Label htmlFor="show-guests" className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                  Show guest list publicly
+                </Label>
+                <Switch
+                  id="show-guests"
+                  checked={quickSettings.showGuestListPublicly}
+                  onCheckedChange={(checked) =>
+                    setQuickSettings((prev) => ({ ...prev, showGuestListPublicly: checked }))
+                  }
+                />
+              </div>
+
+              {/* Close session button */}
+              <Button
+                onClick={() => setUnpublishDialogOpen(true)}
+                variant="outline"
+                className={cn(
+                  "w-full mt-4 rounded-full h-11",
+                  uiMode === "dark"
+                    ? "border-red-500/30 bg-red-500/10 hover:bg-red-500/20 text-red-400"
+                    : "border-red-300 bg-red-50 hover:bg-red-100 text-red-600"
+                )}
+              >
+                <Ban className="w-4 h-4 mr-2" />
+                Close session
+              </Button>
+            </div>
+          </Card>
+        </motion.div>
+      </div>
+
+      {/* Unpublish Confirmation Dialog */}
+      <Dialog open={unpublishDialogOpen} onOpenChange={setUnpublishDialogOpen}>
+        <DialogContent
+          className={cn(
+            "max-w-md rounded-2xl",
+            uiMode === "dark"
+              ? "bg-slate-900 text-white border border-white/10"
+              : "bg-white text-black border border-black/10"
+          )}
+        >
+          <DialogHeader>
+            <DialogTitle className={cn("text-xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
+              Unpublish this invite?
+            </DialogTitle>
+            <DialogDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+              This will take the invite offline. You can publish again anytime.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-3 mt-4">
+            <Button
+              onClick={() => setUnpublishDialogOpen(false)}
+              variant="outline"
+              disabled={isUnpublishing}
+              className={cn(
+                "flex-1 rounded-full h-12",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                  : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
               )}
-            </TabsContent>
-          </Tabs>
-        </Card>
-      </motion.div>
-    </div>
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleUnpublish}
+              disabled={isUnpublishing}
+              className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20"
+            >
+              {isUnpublishing ? "Unpublishing..." : "Unpublish"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
-

@@ -28,6 +28,7 @@ export type DraftSummary = {
   name: string
   updated_at: string
   created_at: string
+  is_live?: boolean // Optional: true if corresponding session is published/live
 }
 
 export type Draft = DraftSummary & {
@@ -54,7 +55,30 @@ export async function listDrafts(): Promise<{ ok: true; drafts: DraftSummary[] }
     return { ok: false, error: error.message }
   }
 
-  return { ok: true, drafts: data || [] }
+  // Check which drafts have corresponding live sessions
+  // We'll check if there's a live session with the same title (hosted by this user)
+  const draftsWithLiveStatus = await Promise.all(
+    (data || []).map(async (draft) => {
+      // Check if there's a live session with matching title
+      // Note: This is a best-effort check. If drafts don't have a direct session_id link,
+      // we match by title + host_id. This might have false positives/negatives.
+      const { data: liveSession } = await supabase
+        .from("sessions")
+        .select("id, status")
+        .eq("host_id", userId)
+        .eq("status", "open")
+        .eq("title", draft.name)
+        .limit(1)
+        .maybeSingle()
+
+      return {
+        ...draft,
+        is_live: !!liveSession,
+      }
+    })
+  )
+
+  return { ok: true, drafts: draftsWithLiveStatus }
 }
 
 export async function getDraft(draftId: string): Promise<{ ok: true; draft: Draft } | { ok: false; error: string }> {

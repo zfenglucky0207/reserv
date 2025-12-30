@@ -7,6 +7,60 @@ import { generateShortCode } from "@/lib/utils/short-code"
 import { toSlug } from "@/lib/utils/slug"
 
 /**
+ * Get host's live (published) sessions
+ */
+export async function getHostLiveSessions(): Promise<
+  | {
+      ok: true
+      sessions: Array<{
+        id: string
+        title: string
+        start_at: string
+        location: string | null
+        capacity: number | null
+        cover_url: string | null
+        sport: "badminton" | "pickleball" | "volleyball" | "other"
+        host_slug: string | null
+        public_code: string | null
+      }>
+      count: number
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get all live (published) sessions for this host
+  // Only returns sessions with status = 'open' (published/live sessions)
+  // Sessions with status = 'draft' are excluded (unpublished sessions)
+  // Limit to 2 and ensure no duplicates
+  const { data: sessions, error } = await supabase
+    .from("sessions")
+    .select("id, title, start_at, location, capacity, cover_url, sport, host_slug, public_code")
+    .eq("host_id", userId)
+    .eq("status", "open") // Only live/published sessions
+    .order("created_at", { ascending: false })
+    .limit(2)
+
+  if (error) {
+    return { ok: false, error: error.message }
+  }
+
+  // Deduplicate by id (in case of any edge cases)
+  const uniqueSessions = Array.from(new Map((sessions || []).map(s => [s.id, s])).values())
+
+  return {
+    ok: true,
+    sessions: uniqueSessions.slice(0, 2), // Hard cap at 2
+    count: uniqueSessions.length,
+  }
+}
+
+/**
  * Update session hostName
  */
 export async function updateSessionHostName(sessionId: string, hostName: string | null) {
@@ -176,6 +230,10 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       declinedList: Array<{ id: string; display_name: string; created_at: string }>
       viewedCount: number // Placeholder for now
       pricePerPerson: number | null
+      sessionStatus: string
+      startAt: string | null
+      hostSlug: string | null
+      publicCode: string | null
     }
   | { ok: false; error: string }
 > {
@@ -189,7 +247,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
   // Get session with capacity and verify ownership
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id, capacity")
+    .select("id, host_id, capacity, status, start_at, host_slug, public_code")
     .eq("id", sessionId)
     .single()
 
@@ -267,6 +325,10 @@ export async function getSessionAnalytics(sessionId: string): Promise<
     declinedList,
     viewedCount: 0, // Placeholder - no backend tracking yet
     pricePerPerson,
+    sessionStatus: session.status as string,
+    startAt: session.start_at as string | null,
+    hostSlug: session.host_slug as string | null,
+    publicCode: session.public_code as string | null,
   }
 }
 
@@ -387,6 +449,31 @@ export async function publishSession(
     return { ok: true, publicCode: session.public_code, hostSlug, sessionId: actualSessionId }
   }
 
+  // Check if host already has 2 live sessions (enforce max 2 concurrent live invites)
+  // Only check if current session is not yet published (idempotent: allow re-publishing existing)
+  if (!session.public_code || session.status !== "open") {
+    const { data: liveSessions, error: liveCountError } = await supabase
+      .from("sessions")
+      .select("id")
+      .eq("host_id", userId)
+      .eq("status", "open")
+
+    if (liveCountError) {
+      return { ok: false, error: "Failed to check live session count" }
+    }
+
+    // Count live sessions excluding current session (if it exists in the list)
+    const liveCount = liveSessions?.filter((s) => s.id !== actualSessionId).length || 0
+
+    // If host already has 2 live sessions, block publishing this one
+    if (liveCount >= 2) {
+      return {
+        ok: false,
+        error: "Limit reached: You already have 2 live invites. Close one to publish another.",
+      }
+    }
+  }
+
   // Generate public_code if it doesn't exist
   let publicCode = session.public_code
   if (!publicCode) {
@@ -416,8 +503,14 @@ export async function publishSession(
     }
   }
 
-  // Generate host_slug from hostName
+  // Generate host_slug from hostName (guaranteed to be a string)
   const hostSlug = toSlug(sessionData.hostName || "host")
+
+  // At this point, publicCode and hostSlug are guaranteed to be strings
+  // (publicCode is generated if missing, hostSlug is generated from hostName)
+  if (!publicCode) {
+    return { ok: false, error: "Failed to generate public code" }
+  }
 
   // Update session with public_code, host_slug, and status = 'open'
   const { error: updateError } = await supabase
@@ -439,4 +532,194 @@ export async function publishSession(
   revalidatePath(`/${hostSlug}/${publicCode}`)
 
   return { ok: true, publicCode, hostSlug, sessionId: actualSessionId }
+}
+
+/**
+ * Unpublish a session (change status from 'open' to 'draft')
+ */
+export async function unpublishSession(
+  sessionId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    console.error("[unpublishSession] Unauthorized: No userId")
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify session belongs to user and is currently published
+  const { data: session, error: fetchError } = await supabase
+    .from("sessions")
+    .select("host_id, status")
+    .eq("id", sessionId)
+    .single()
+
+  if (fetchError || !session) {
+    console.error("[unpublishSession] Session not found:", { sessionId, error: fetchError?.message })
+    return { ok: false, error: "Session not found" }
+  }
+
+  if (session.host_id !== userId) {
+    console.error("[unpublishSession] Unauthorized: Session doesn't belong to user", { sessionId, sessionHostId: session.host_id, userId })
+    return { ok: false, error: "Unauthorized: You don't own this session" }
+  }
+
+  if (session.status !== "open") {
+    console.error("[unpublishSession] Session is not published", { sessionId, status: session.status })
+    return { ok: false, error: "Session is not published" }
+  }
+
+  // Update session status to 'draft' (unpublished)
+  // This ensures it will no longer appear in getHostLiveSessions() queries
+  // which filter by status = 'open'
+  // Filter by both id and host_id for safety
+  const { error: updateError } = await supabase
+    .from("sessions")
+    .update({
+      status: "draft", // Change from 'open' to 'draft' to remove from live invites
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", sessionId)
+    .eq("host_id", userId) // Extra safety: ensure we only update own sessions
+
+  if (updateError) {
+    console.error("[unpublishSession] DB update error:", { sessionId, userId, error: updateError.message, code: updateError.code })
+    return { ok: false, error: updateError.message || "Failed to unpublish session" }
+  }
+
+  // Verify the update actually persisted
+  const { data: verify, error: verifyError } = await supabase
+    .from("sessions")
+    .select("id, status, host_id")
+    .eq("id", sessionId)
+    .single()
+
+  console.log("[unpublishSession] Post-update verification:", {
+    sessionId,
+    status: verify?.status,
+    verifyError: verifyError?.message,
+  })
+
+  if (verifyError || !verify) {
+    console.error("[unpublishSession] Verification failed - status may not have changed", { sessionId, verifyError: verifyError?.message })
+    return { ok: false, error: "Update verification failed" }
+  }
+
+  if (verify.status !== "draft") {
+    console.error("[unpublishSession] Status mismatch after update", {
+      sessionId,
+      expected: "draft",
+      actual: verify.status,
+    })
+    return { ok: false, error: "Status update did not persist" }
+  }
+
+  // Revalidate paths to ensure fresh data after unpublish
+  revalidatePath("/host/sessions")
+  revalidatePath(`/host/sessions/${sessionId}`)
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+  revalidatePath("/host/sessions/new/edit")
+  revalidatePath(`/session/${sessionId}`)
+  revalidatePath("/host")
+
+  return { ok: true }
+}
+
+/**
+ * Update an existing draft session (status = 'draft')
+ * Updates the sessions row with the provided patch data
+ */
+export async function updateDraftSession(
+  sessionId: string,
+  patch: {
+    title?: string
+    description?: string | null
+    cover_url?: string | null
+    sport?: "badminton" | "pickleball" | "volleyball" | "other"
+    location?: string | null
+    start_at?: string
+    end_at?: string | null
+    capacity?: number | null
+    host_name?: string | null
+  }
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify session belongs to user and is a draft
+  const { data: session, error: fetchError } = await supabase
+    .from("sessions")
+    .select("host_id, status")
+    .eq("id", sessionId)
+    .single()
+
+  if (fetchError || !session) {
+    console.error("[updateDraftSession] Session not found:", { sessionId, error: fetchError?.message })
+    return { ok: false, error: "Session not found" }
+  }
+
+  if (session.host_id !== userId) {
+    console.error("[updateDraftSession] Unauthorized: Session doesn't belong to user", { sessionId, sessionHostId: session.host_id, userId })
+    return { ok: false, error: "Unauthorized: You don't own this session" }
+  }
+
+  if (session.status !== "draft") {
+    console.error("[updateDraftSession] Session is not a draft", { sessionId, status: session.status })
+    return { ok: false, error: "Session is not a draft" }
+  }
+
+  // Update session fields
+  const { error: updateError } = await supabase
+    .from("sessions")
+    .update({
+      ...patch,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", sessionId)
+    .eq("host_id", userId) // Extra safety: ensure we only update own sessions
+
+  if (updateError) {
+    console.error("[updateDraftSession] DB update error:", { sessionId, userId, error: updateError.message, code: updateError.code })
+    return { ok: false, error: updateError.message || "Failed to update draft session" }
+  }
+
+  // Verify the update actually persisted (confirm it's not inserting)
+  const { data: verify, error: verifyError } = await supabase
+    .from("sessions")
+    .select("id, status, updated_at")
+    .eq("id", sessionId)
+    .single()
+
+  console.log("[updateDraftSession] verify update:", {
+    sessionId,
+    status: verify?.status,
+    updated_at: verify?.updated_at,
+    verifyError: verifyError?.message,
+  })
+
+  if (verifyError || !verify) {
+    console.error("[updateDraftSession] Verification failed - update may not have persisted", { sessionId, verifyError: verifyError?.message })
+    return { ok: false, error: "Update verification failed" }
+  }
+
+  if (verify.status !== "draft") {
+    console.error("[updateDraftSession] Status mismatch after update", {
+      sessionId,
+      expected: "draft",
+      actual: verify.status,
+    })
+    return { ok: false, error: "Status update did not persist correctly" }
+  }
+
+  // Revalidate paths to ensure fresh data after update
+  revalidatePath("/host/sessions")
+  revalidatePath(`/host/sessions/${sessionId}`)
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+
+  return { ok: true }
 }

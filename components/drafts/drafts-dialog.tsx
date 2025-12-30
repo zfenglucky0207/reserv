@@ -121,12 +121,27 @@ export function DraftsDialog({
                     )}
                     disabled={isOverwriteMode}
                   >
-                    <h3 className={cn(
-                      "font-medium text-base mb-1 truncate",
-                      uiMode === "dark" ? "text-white" : "text-black"
-                    )}>
-                      {draft.name}
-                    </h3>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className={cn(
+                        "font-medium text-base truncate flex-1",
+                        uiMode === "dark" ? "text-white" : "text-black"
+                      )}>
+                        {draft.name}
+                      </h3>
+                      {/* LIVE badge */}
+                      {draft.is_live && (
+                        <div className={cn(
+                          "flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0",
+                          "bg-red-500/80 backdrop-blur-sm border border-red-400/30 text-white shadow-lg shadow-red-500/20"
+                        )}>
+                          <span className="relative flex h-1.5 w-1.5">
+                            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                            <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-red-500"></span>
+                          </span>
+                          LIVE
+                        </div>
+                      )}
+                    </div>
                     <p className={cn(
                       "text-xs",
                       uiMode === "dark" ? "text-white/50" : "text-black/50"

@@ -1,9 +1,9 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
-import { UserCircle, LogOut } from "lucide-react"
+import { UserCircle, LogOut, Radio } from "lucide-react"
 import { motion } from "framer-motion"
 import { useAuth } from "@/lib/hooks/use-auth"
 import { Button } from "@/components/ui/button"
@@ -17,6 +17,8 @@ import {
 import { LoginDialog } from "@/components/login-dialog"
 import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { StardustButton } from "@/components/ui/stardust-button"
+import { LiveInviteGuardModal } from "@/components/host/live-invite-guard-modal"
+import { getHostLiveSessions } from "@/app/host/sessions/[id]/actions"
 
 interface TopNavProps {
   showCreateNow?: boolean
@@ -26,13 +28,102 @@ interface TopNavProps {
 export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps) {
   const { authUser, logOut } = useAuth()
   const [loginDialogOpen, setLoginDialogOpen] = useState(false)
+  const [liveInvitesModalOpen, setLiveInvitesModalOpen] = useState(false)
+  const [liveSessions, setLiveSessions] = useState<
+    Array<{
+      id: string
+      title: string
+      start_at: string
+      location: string | null
+      capacity: number | null
+      cover_url: string | null
+      sport: "badminton" | "pickleball" | "volleyball" | "other"
+      host_slug: string | null
+      public_code: string | null
+    }>
+  >([])
+  const [isLoadingLiveSessions, setIsLoadingLiveSessions] = useState(false)
+  const [liveSessionsError, setLiveSessionsError] = useState<string | null>(null)
+  const [liveSessionsCount, setLiveSessionsCount] = useState<number | undefined>(undefined)
+  const [uiMode, setUiMode] = useState<"dark" | "light">("dark")
   const pathname = usePathname()
   const router = useRouter()
+
+  // Sync uiMode from localStorage
+  useEffect(() => {
+    const savedUiMode = localStorage.getItem("reserv-ui-mode") as "dark" | "light" | null
+    if (savedUiMode === "dark" || savedUiMode === "light") {
+      setUiMode(savedUiMode)
+    }
+  }, [])
 
   const handleSignOut = async () => {
     await logOut()
     // Refresh to update UI state
     window.location.href = "/"
+  }
+
+  const refetchLiveSessions = async () => {
+    if (!authUser?.id) return
+
+    try {
+      const result = await getHostLiveSessions()
+      if (result.ok) {
+        // Deduplicate by id (extra safety)
+        const uniqueSessions = Array.from(
+          new Map(result.sessions.map(s => [s.id, s])).values()
+        ).slice(0, 2) // Hard cap at 2
+        setLiveSessions(uniqueSessions)
+        setLiveSessionsCount(result.count)
+        setLiveSessionsError(null)
+      } else {
+        setLiveSessionsError(result.error || "Failed to load live invites")
+        setLiveSessionsCount(0)
+        setLiveSessions([])
+      }
+    } catch (error: any) {
+      console.error("Failed to refetch live sessions:", error)
+      setLiveSessionsError(error?.message || "Failed to load live invites")
+      setLiveSessionsCount(0)
+      setLiveSessions([])
+    }
+  }
+
+  const handleLiveInvitesClick = async () => {
+    if (!authUser?.id) return
+
+    setIsLoadingLiveSessions(true)
+    setLiveSessionsError(null)
+
+    try {
+      const result = await getHostLiveSessions()
+      if (result.ok) {
+        // Deduplicate by id (extra safety)
+        const uniqueSessions = Array.from(
+          new Map(result.sessions.map(s => [s.id, s])).values()
+        ).slice(0, 2)
+        setLiveSessions(uniqueSessions)
+        setLiveSessionsCount(result.count)
+        setLiveInvitesModalOpen(true)
+      } else {
+        setLiveSessionsError(result.error || "Failed to load live invites")
+        setLiveSessionsCount(0)
+        setLiveSessions([])
+        setLiveInvitesModalOpen(true) // Open modal to show error state
+      }
+    } catch (error: any) {
+      console.error("Failed to fetch live sessions:", error)
+      setLiveSessionsError(error?.message || "Failed to load live invites")
+      setLiveSessionsCount(0)
+      setLiveSessions([])
+      setLiveInvitesModalOpen(true) // Open modal to show error state
+    } finally {
+      setIsLoadingLiveSessions(false)
+    }
+  }
+
+  const handleRetryLiveSessions = async () => {
+    await handleLiveInvitesClick()
   }
 
   // Get user display name
@@ -90,6 +181,14 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
                     Profile
                   </DropdownMenuItem>
                     <DropdownMenuSeparator className="bg-gray-200 dark:bg-white/10" />
+                    <DropdownMenuItem
+                      onClick={handleLiveInvitesClick}
+                      className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-white/10 cursor-pointer focus:bg-gray-100 dark:focus:bg-white/10"
+                    >
+                      <Radio className="mr-2 h-4 w-4" />
+                      Live invites
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator className="bg-gray-200 dark:bg-white/10" />
                   <DropdownMenuItem
                     onClick={handleSignOut}
                       className="text-gray-900 dark:text-white hover:bg-gray-100 dark:hover:bg-white/10 cursor-pointer focus:bg-gray-100 dark:focus:bg-white/10"
@@ -120,6 +219,28 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
           onContinueAsGuest={onContinueAsGuest}
         />
       )}
+          {authUser && (
+            <LiveInviteGuardModal
+              open={liveInvitesModalOpen}
+              onOpenChange={setLiveInvitesModalOpen}
+              liveSessions={liveSessions}
+              uiMode={uiMode}
+              onContinueCreating={() => {
+                setLiveInvitesModalOpen(false)
+              }}
+              userId={authUser.id || null}
+              onSessionsUpdate={(updatedSessions) => {
+                setLiveSessions(updatedSessions)
+                setLiveSessionsCount(updatedSessions.length)
+                // Don't close modal when empty - show empty state instead
+              }}
+              onUnpublishSuccess={refetchLiveSessions}
+              count={liveSessionsCount}
+              isLoading={isLoadingLiveSessions}
+              error={liveSessionsError}
+              onRetry={handleRetryLiveSessions}
+            />
+          )}
     </>
   )
 }

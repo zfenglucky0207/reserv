@@ -1,12 +1,15 @@
 "use client"
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
+import { useState, useEffect, Suspense } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { SessionInvite } from "@/components/session-invite"
 import { GuestRSVPDialog } from "./guest-rsvp-dialog"
 import { joinSession, declineSession } from "@/app/session/[id]/actions"
 import { useToast } from "@/hooks/use-toast"
 import { format, parseISO } from "date-fns"
+import { ArrowLeft } from "lucide-react"
+import { Button } from "@/components/ui/button"
+import { cn } from "@/lib/utils"
 
 interface Participant {
   id: string
@@ -65,12 +68,16 @@ function getSportDisplayName(sport: string): string {
   return map[sport] || sport
 }
 
-export function PublicSessionView({ session, participants }: PublicSessionViewProps) {
+function PublicSessionViewContent({ session, participants }: PublicSessionViewProps) {
   const router = useRouter()
+  const searchParams = useSearchParams()
   const { toast } = useToast()
   const [rsvpDialogOpen, setRsvpDialogOpen] = useState(false)
   const [rsvpAction, setRsvpAction] = useState<"join" | "decline">("join")
   const [uiMode, setUiMode] = useState<"dark" | "light">("dark")
+  
+  // Check if user came from analytics page
+  const fromAnalytics = searchParams.get("from") === "analytics"
 
   // Hydrate uiMode from localStorage
   useEffect(() => {
@@ -170,8 +177,31 @@ export function PublicSessionView({ session, participants }: PublicSessionViewPr
     }
   }
 
+  const handleBackToAnalytics = () => {
+    router.push(`/host/sessions/${session.id}/edit`)
+  }
+
   return (
     <>
+      {/* Back to Analytics Button - only show if from analytics */}
+      {fromAnalytics && (
+        <div className="fixed top-16 left-4 z-50">
+          <Button
+            onClick={handleBackToAnalytics}
+            variant="outline"
+            className={cn(
+              "rounded-full h-10 px-4 gap-2 backdrop-blur-xl border shadow-lg",
+              uiMode === "dark"
+                ? "bg-black/40 border-white/20 text-white hover:bg-black/60"
+                : "bg-white/80 border-black/20 text-black hover:bg-white"
+            )}
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span className="text-sm font-medium">Back to analytics</span>
+          </Button>
+        </div>
+      )}
+
       <SessionInvite
         sessionId={session.id}
         initialCoverUrl={session.cover_url}
@@ -200,6 +230,14 @@ export function PublicSessionView({ session, participants }: PublicSessionViewPr
         action={rsvpAction}
       />
     </>
+  )
+}
+
+export function PublicSessionView({ session, participants }: PublicSessionViewProps) {
+  return (
+    <Suspense fallback={<div>Loading...</div>}>
+      <PublicSessionViewContent session={session} participants={participants} />
+    </Suspense>
   )
 }
 
