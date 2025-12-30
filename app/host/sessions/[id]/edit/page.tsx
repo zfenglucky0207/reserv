@@ -40,22 +40,20 @@ async function HostSessionEditContent({
   })
 
   return (
-    <main className="min-h-screen sporty-bg">
-      <SessionInvite
-        sessionId={sessionId}
-        initialCoverUrl={session.cover_url || null}
-        initialSport={session.sport || null}
-        initialEditMode={true}
-        initialPreviewMode={isPreviewMode}
-        initialTitle={session.title || null}
-        initialDate={null} // TODO: Format from session.start_at if needed
-        initialLocation={session.location || null}
-        initialPrice={session.price || null}
-        initialCapacity={session.capacity || null}
-        initialHostName={session.host_name || null}
-        initialDescription={session.description || null}
-      />
-    </main>
+    <SessionInvite
+      sessionId={sessionId}
+      initialCoverUrl={session.cover_url || null}
+      initialSport={session.sport || null}
+      initialEditMode={true}
+      initialPreviewMode={isPreviewMode}
+      initialTitle={session.title || null}
+      initialDate={null} // TODO: Format from session.start_at if needed
+      initialLocation={session.location || null}
+      initialPrice={session.price || null}
+      initialCapacity={session.capacity || null}
+      initialHostName={session.host_name || null}
+      initialDescription={session.description || null}
+    />
   )
 }
 
@@ -71,8 +69,10 @@ export default async function HostSessionEditPage({
   const isPreviewMode = mode === "preview"
 
   return (
-    <Suspense fallback={<div>Loading...</div>}>
-      <HostSessionEditContent sessionId={sessionId} isPreviewMode={isPreviewMode} />
-    </Suspense>
+    <main className="min-h-screen sporty-bg">
+      <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
+        <HostSessionEditContent sessionId={sessionId} isPreviewMode={isPreviewMode} />
+      </Suspense>
+    </main>
   )
 }

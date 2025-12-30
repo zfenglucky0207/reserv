@@ -1,9 +1,29 @@
 import { SessionInvite } from "@/components/session-invite"
 import { createClient } from "@/lib/supabase/server/server"
 import { notFound } from "next/navigation"
+import { Suspense } from "react"
 
 // Force dynamic rendering to always fetch latest cover
 export const dynamic = "force-dynamic"
+
+async function SharedSessionContent({
+  sessionId,
+  session,
+}: {
+  sessionId: string
+  session: any
+}) {
+  // For shared/public view, show in preview mode only (not edit mode)
+  return (
+    <SessionInvite
+      sessionId={sessionId}
+      initialCoverUrl={session.cover_url || null}
+      initialSport={session.sport || null}
+      initialEditMode={false}
+      initialPreviewMode={true}
+    />
+  )
+}
 
 export default async function SharedSessionPage({
   params,
@@ -36,16 +56,11 @@ export default async function SharedSessionPage({
     hasCoverUrl: !!session.cover_url 
   })
 
-  // For shared/public view, show in preview mode only (not edit mode)
   return (
     <main className="min-h-screen sporty-bg">
-      <SessionInvite
-        sessionId={sessionId}
-        initialCoverUrl={session.cover_url || null}
-        initialSport={session.sport || null}
-        initialEditMode={false}
-        initialPreviewMode={true}
-      />
+      <Suspense fallback={<div className="flex items-center justify-center min-h-screen">Loading...</div>}>
+        <SharedSessionContent sessionId={sessionId} session={session} />
+      </Suspense>
     </main>
   )
 }
