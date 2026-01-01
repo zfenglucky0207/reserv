@@ -176,8 +176,8 @@ export function LiveInviteGuardModal({
   const handleGoToLiveInvite = (session: LiveSession) => {
     if (session.id) {
       onOpenChange(false)
-      // Navigate to analytics page (same route as edit, but analytics view shows when published)
-      router.push(`/host/sessions/${session.id}/edit`)
+      // Navigate to preview page instead of analytics
+      router.push(`/host/sessions/${session.id}/edit?mode=preview`)
     }
   }
 
@@ -221,8 +221,8 @@ export function LiveInviteGuardModal({
 
       if (!result.ok) {
         toast({
-          title: "Unpublish failed",
-          description: result.error || "Failed to unpublish invite. Try again.",
+          title: "Removal failed",
+          description: result.error || "Failed to remove invite. Try again.",
           variant: "destructive",
         })
         setIsUnpublishing(false)
@@ -243,8 +243,8 @@ export function LiveInviteGuardModal({
       setSessionToUnpublish(null)
 
       toast({
-        title: "Invite unpublished",
-        description: "The invite has been taken offline.",
+        title: "Invite removed",
+        description: "Invite and all participant data have been permanently deleted.",
         variant: "default",
       })
 
@@ -261,8 +261,8 @@ export function LiveInviteGuardModal({
     } catch (error: any) {
       console.error("[handleUnpublishConfirm] Error:", { sessionId: sessionToUnpublish?.id, error })
       toast({
-        title: "Unpublish failed",
-        description: error.message || "Failed to unpublish invite. Try again.",
+        title: "Removal failed",
+        description: error.message || "Failed to remove invite. Try again.",
         variant: "destructive",
       })
     } finally {
@@ -376,12 +376,10 @@ export function LiveInviteGuardModal({
                       handleUnpublishClick(e, session)
                     }}
                     size="sm"
-                    variant="outline"
+                    variant="ghost"
                     className={cn(
-                      "absolute top-4 right-4 z-10 rounded-full h-8 px-3 text-xs",
-                      uiMode === "dark"
-                        ? "border-red-500/30 bg-red-500/10 text-red-400 hover:bg-red-500/20 hover:border-red-500/50"
-                        : "border-red-300 bg-red-50 text-red-600 hover:bg-red-100 hover:border-red-400"
+                      "absolute top-6 right-7 z-10 rounded-full h-7 px-2.5 text-xs",
+                      "bg-red-500/50 text-white border border-red-500/80 hover:bg-red-500/70 hover:text-white shadow-none"
                     )}
                   >
                     <Ban className="w-3 h-3 mr-1.5" />
@@ -540,10 +538,10 @@ export function LiveInviteGuardModal({
         >
           <DialogHeader>
             <DialogTitle className={cn("text-xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-              Unpublish this invite?
+              Remove this invite?
             </DialogTitle>
             <DialogDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-              This will take the invite offline. You can publish again anytime.
+              This will permanently delete the invite and all participant data. This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-3 mt-4">
@@ -568,7 +566,7 @@ export function LiveInviteGuardModal({
               disabled={isUnpublishing}
               className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20"
             >
-              {isUnpublishing ? "Unpublishing..." : "Unpublish"}
+              {isUnpublishing ? "Removing..." : "Remove"}
             </Button>
           </DialogFooter>
         </DialogContent>

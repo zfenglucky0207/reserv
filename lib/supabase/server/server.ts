@@ -84,7 +84,11 @@ export async function getUser(supabase: SupabaseClient) {
   } = await supabase.auth.getUser();
 
   if (error) {
-    console.error("Error getting user:", error.message);
+    // Don't log expected "missing session" errors for unauthenticated users
+    // These are normal on public routes
+    if (error.message !== "Auth session missing!") {
+      console.error("Error getting user:", error.message);
+    }
     return null;
   }
 

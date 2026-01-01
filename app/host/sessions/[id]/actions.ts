@@ -614,7 +614,10 @@ export async function updateLiveSession(
 }
 
 /**
- * Unpublish a session (change status from 'open' to 'draft')
+ * Unpublish a session (hard-delete session and all related participant data)
+ * This permanently removes the session row, which cascades to delete:
+ * - All participants (via FK CASCADE)
+ * - All payment_proofs (via FK CASCADE)
  */
 export async function unpublishSession(
   sessionId: string
@@ -645,64 +648,121 @@ export async function unpublishSession(
   }
 
   if (session.status !== "open") {
-    console.error("[unpublishSession] Session is not published", { sessionId, status: session.status })
-    return { ok: false, error: "Session is not published" }
+    // Idempotent: if already not published, return success
+    console.log("[unpublishSession] Session is not published, treating as already removed", { sessionId, status: session.status })
+    return { ok: true }
   }
 
-  // Update session status to 'draft' (unpublished)
-  // This ensures it will no longer appear in getHostLiveSessions() queries
-  // which filter by status = 'open'
-  // Filter by both id and host_id for safety
-  const { error: updateError } = await supabase
+  // Hard-delete the session row (CASCADE will automatically delete all related data)
+  // Filter by both id and host_id for safety (RLS policy also enforces this)
+  const { error: deleteError, count } = await supabase
     .from("sessions")
-    .update({
-      status: "draft", // Change from 'open' to 'draft' to remove from live invites
-      updated_at: new Date().toISOString(),
-    })
+    .delete()
     .eq("id", sessionId)
-    .eq("host_id", userId) // Extra safety: ensure we only update own sessions
+    .eq("host_id", userId) // Extra safety: ensure we only delete own sessions
 
-  if (updateError) {
-    console.error("[unpublishSession] DB update error:", { sessionId, userId, error: updateError.message, code: updateError.code })
-    return { ok: false, error: updateError.message || "Failed to unpublish session" }
+  if (deleteError) {
+    console.error("[unpublishSession] DB delete error:", { sessionId, userId, error: deleteError.message, code: deleteError.code })
+    return { ok: false, error: deleteError.message || "Failed to delete session" }
   }
 
-  // Verify the update actually persisted
+  // Verify the deletion succeeded (should return 0 rows)
   const { data: verify, error: verifyError } = await supabase
     .from("sessions")
-    .select("id, status, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
-  console.log("[unpublishSession] Post-update verification:", {
-    sessionId,
-    status: verify?.status,
-    verifyError: verifyError?.message,
-  })
-
-  if (verifyError || !verify) {
-    console.error("[unpublishSession] Verification failed - status may not have changed", { sessionId, verifyError: verifyError?.message })
-    return { ok: false, error: "Update verification failed" }
+  if (!verifyError && verify) {
+    // Session still exists (shouldn't happen)
+    console.error("[unpublishSession] Verification failed - session still exists after delete", { sessionId })
+    return { ok: false, error: "Deletion verification failed" }
   }
 
-  if (verify.status !== "draft") {
-    console.error("[unpublishSession] Status mismatch after update", {
-      sessionId,
-      expected: "draft",
-      actual: verify.status,
-    })
-    return { ok: false, error: "Status update did not persist" }
-  }
+  console.log("[unpublishSession] Successfully deleted session and all related data", { sessionId })
 
-  // Revalidate paths to ensure fresh data after unpublish
+  // Revalidate paths to ensure fresh data after deletion
   revalidatePath("/host/sessions")
-  revalidatePath(`/host/sessions/${sessionId}`)
-  revalidatePath(`/host/sessions/${sessionId}/edit`)
   revalidatePath("/host/sessions/new/edit")
-  revalidatePath(`/session/${sessionId}`)
   revalidatePath("/host")
 
   return { ok: true }
+}
+
+/**
+ * Get session data in draft format (for saving to drafts from analytics)
+ */
+export async function getSessionDataForDraft(
+  sessionId: string
+): Promise<
+  | {
+      ok: true
+      data: {
+        selectedSport: string
+        theme: string
+        effects: { grain: boolean; glow: boolean; vignette: boolean }
+        optimisticCoverUrl: string | null
+        eventTitle: string
+        titleFont: string
+        eventDate: string
+        eventLocation: string
+        eventMapUrl: string
+        eventPrice: number
+        eventCapacity: number
+        hostName: string | null
+        eventDescription: string
+        bankName: string
+        accountNumber: string
+        accountName: string
+        paymentNotes: string
+        paymentQrImage: string | null
+      }
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify session belongs to user
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("*")
+    .eq("id", sessionId)
+    .eq("host_id", userId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  // Convert session to draft format
+  // Note: Some fields may not exist in sessions table, so we use defaults
+  const draftData = {
+    selectedSport: session.sport || "badminton",
+    theme: "badminton", // Default theme (not stored in sessions)
+    effects: { grain: false, glow: false, vignette: false }, // Default effects
+    optimisticCoverUrl: session.cover_url || null,
+    eventTitle: session.title || "",
+    titleFont: "inter", // Default font (not stored in sessions)
+    eventDate: session.start_at || "",
+    eventLocation: session.location || "",
+    eventMapUrl: "", // Not stored in sessions
+    eventPrice: 0, // Not stored in sessions (would need to fetch from payment_proofs or add price column)
+    eventCapacity: session.capacity || 0,
+    hostName: session.host_name || null,
+    eventDescription: session.description || "",
+    bankName: "", // Not stored in sessions (would need separate table)
+    accountNumber: "", // Not stored in sessions
+    accountName: "", // Not stored in sessions
+    paymentNotes: "", // Not stored in sessions
+    paymentQrImage: null, // Not stored in sessions
+  }
+
+  return { ok: true, data: draftData }
 }
 
 /**

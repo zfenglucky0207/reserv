@@ -15,7 +15,7 @@ import { useToast } from "@/hooks/use-toast"
 import { cn } from "@/lib/utils"
 
 interface EditorBottomBarProps {
-  onPreview: () => void
+  onPreview?: () => void // Make optional so fallback can be used
   onPublish?: () => void
   onEdit?: () => void // New prop for Edit action when published
   onUnpublish?: () => void // New prop for Unpublish action
@@ -55,6 +55,21 @@ export function EditorBottomBar({
 
   // Derive sessionId from URL params for robust Edit navigation
   const sessionIdFromUrl = (params?.id as string) ?? ""
+
+  // Handle Preview button click - use URL params as fallback if onPreview not provided
+  const handlePreviewClick = () => {
+    if (onPreview) {
+      onPreview()
+    } else if (sessionIdFromUrl) {
+      router.push(`/host/sessions/${sessionIdFromUrl}/edit?mode=preview`)
+    } else {
+      toast({
+        title: "Error",
+        description: "Missing session ID",
+        variant: "destructive",
+      })
+    }
+  }
 
   // Handle Edit button click - use URL params as fallback if onEdit not provided
   const handleEditClick = () => {
@@ -203,7 +218,7 @@ export function EditorBottomBar({
               )}
 
               {/* Preview Button */}
-              <button onClick={onPreview} className="flex flex-col items-center gap-1.5 group">
+              <button onClick={handlePreviewClick} className="flex flex-col items-center gap-1.5 group">
                 <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
                   <Eye className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
                 </div>

@@ -17,6 +17,12 @@ async function PublicInviteContent({
 }) {
   const supabase = await createClient()
 
+  // Exclude known reserved paths that shouldn't be treated as session codes
+  const reservedPaths = ["login", "auth", "signin", "signup", "register", "dashboard", "admin", "api"]
+  if (reservedPaths.includes(code.toLowerCase()) || reservedPaths.includes(hostSlug.toLowerCase())) {
+    notFound()
+  }
+
   // Check if user is authenticated and if they are the host
   const user = await getUser(supabase)
 
@@ -29,7 +35,12 @@ async function PublicInviteContent({
     .single()
 
   if (sessionError || !session) {
-    console.error(`[PublicInvitePage] Error fetching session by code (${code}):`, sessionError)
+    // Only log errors for codes that look like valid session codes (alphanumeric, reasonable length)
+    // Avoid logging errors for obvious non-session routes like "login"
+    const looksLikeSessionCode = /^[a-zA-Z0-9]{4,}$/.test(code)
+    if (looksLikeSessionCode) {
+      console.error(`[PublicInvitePage] Error fetching session by code (${code}):`, sessionError)
+    }
     notFound()
   }
 

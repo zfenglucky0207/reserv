@@ -16,6 +16,7 @@ interface PublishShareSheetProps {
   publishedUrl: string
   hostSlug: string
   publicCode: string
+  sessionId?: string // Session ID for preview navigation
   uiMode: "dark" | "light"
 }
 
@@ -25,6 +26,7 @@ export function PublishShareSheet({
   publishedUrl,
   hostSlug,
   publicCode,
+  sessionId,
   uiMode,
 }: PublishShareSheetProps) {
   const router = useRouter()
@@ -136,7 +138,13 @@ export function PublishShareSheet({
 
   const handleGoToPublishedLink = () => {
     onOpenChange(false)
-    router.push(`/${hostSlug}/${publicCode}`)
+    // Navigate to host preview mode instead of public route (avoids redirect loop)
+    if (sessionId) {
+      router.push(`/host/sessions/${sessionId}/edit?mode=preview`)
+    } else {
+      // Fallback to public route if sessionId not available
+      router.push(`/${hostSlug}/${publicCode}`)
+    }
   }
 
   return (
@@ -264,7 +272,7 @@ export function PublishShareSheet({
             className="w-full bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-12 shadow-lg shadow-lime-500/20"
           >
             <ExternalLink className="w-4 h-4 mr-2" />
-            View Analytics
+            View invite
           </Button>
 
           {/* Secondary: Done */}

@@ -48,12 +48,16 @@ async function HostSessionEditContent({
   const isPublished = session.status === "open" && !!session.public_code
 
   // If forceEditMode is true, always start in edit mode (even if published)
-  const shouldStartInEditMode = forceEditMode || !isPublished
+  // If isPreviewMode is true, always start in preview mode (even if published)
+  const shouldStartInEditMode = forceEditMode || (!isPreviewMode && !isPublished)
+  const shouldStartInPreviewMode = isPreviewMode
   
   console.log(`[HostSessionEditContent] Edit mode decision:`, {
     forceEditMode,
+    isPreviewMode,
     isPublished,
-    shouldStartInEditMode
+    shouldStartInEditMode,
+    shouldStartInPreviewMode
   })
 
   return (
@@ -62,7 +66,7 @@ async function HostSessionEditContent({
       initialCoverUrl={session.cover_url || null}
       initialSport={session.sport || null}
       initialEditMode={shouldStartInEditMode} // Force edit mode if requested, otherwise analytics for published
-      initialPreviewMode={isPreviewMode && !isPublished} // Only preview if not published
+      initialPreviewMode={shouldStartInPreviewMode} // Allow preview mode even for published sessions
       initialTitle={session.title || null}
       initialDate={null} // TODO: Format from session.start_at if needed
       initialLocation={session.location || null}

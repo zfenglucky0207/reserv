@@ -13,6 +13,7 @@ import { useToast } from "@/hooks/use-toast"
 import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight } from "lucide-react"
 import { formatDistanceToNow, format, isPast, isFuture, parseISO } from "date-fns"
 import { CopyInviteLinkButton } from "@/components/common/copy-invite-link-button"
+import { SaveDraftGuardModal } from "@/components/host/save-draft-guard-modal"
 
 interface HostSessionAnalyticsProps {
   sessionId: string
@@ -143,16 +144,16 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
       
       if (!result.ok) {
         toast({
-          title: "Unpublish failed",
-          description: result.error || "Failed to unpublish session.",
+          title: "Removal failed",
+          description: result.error || "Failed to remove session.",
           variant: "destructive",
         })
         return
       }
       
       toast({
-        title: "Invite unpublished",
-        description: "The invite has been taken offline.",
+        title: "Invite removed",
+        description: "Invite and all participant data have been permanently deleted.",
       })
       
       setUnpublishDialogOpen(false)
@@ -442,10 +443,10 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
         >
           <DialogHeader>
             <DialogTitle className={cn("text-xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-              Unpublish this invite?
+              Remove this invite?
             </DialogTitle>
             <DialogDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-              This will take the invite offline. You can publish again anytime.
+              This will permanently delete the invite and all participant data. This action cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter className="gap-3 mt-4">
@@ -467,11 +468,14 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
               disabled={isUnpublishing}
               className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20"
             >
-              {isUnpublishing ? "Unpublishing..." : "Unpublish"}
+              {isUnpublishing ? "Removing..." : "Remove"}
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Save Draft Guard Modal */}
+      <SaveDraftGuardModal sessionId={sessionId} uiMode={uiMode} sessionStatus={analytics?.sessionStatus} />
     </div>
   )
 }

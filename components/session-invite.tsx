@@ -1268,6 +1268,7 @@ export function SessionInvite({
         setPublishedCode(result.publicCode)
         
         // Update actualSessionId if session was created
+        const finalSessionId = result.sessionId || publishSessionId || actualSessionId
         if (result.sessionId) {
           setActualSessionId(result.sessionId)
           // Store in sessionStorage so we can navigate after share sheet closes
@@ -1277,6 +1278,7 @@ export function SessionInvite({
         }
 
         // Open share sheet immediately (don't navigate yet - navigation will happen after sheet closes)
+        // Store sessionId for share sheet to use in preview navigation
         setPublishShareSheetOpen(true)
 
         // Don't switch to analytics view yet - wait for user to close the share sheet
@@ -1465,7 +1467,8 @@ export function SessionInvite({
   const confirmSaveDraft = async (name: string) => {
     try {
       const payload = buildDraftPayload()
-      const result = await saveDraft(name, payload)
+      // Pass source_session_id if we're editing an existing session
+      const result = await saveDraft(name, payload, actualSessionId || null)
 
       if (result.ok) {
         toast({
@@ -1586,7 +1589,8 @@ export function SessionInvite({
   const handleOverwriteDraft = async (draftId: string) => {
     try {
       const payload = buildDraftPayload()
-      const result = await overwriteDraft(draftId, payload)
+      // Pass source_session_id if we're editing an existing session
+      const result = await overwriteDraft(draftId, payload, undefined, actualSessionId || null)
 
       if (result.ok) {
         toast({
@@ -1683,7 +1687,8 @@ export function SessionInvite({
   // If published, show analytics view instead of edit/preview
   // But don't show analytics if share sheet is open (let user see the share sheet first)
   // Or if edit mode is explicitly requested (via ?mode=edit query param or initialEditMode prop)
-  if (isPublished && actualSessionId && !demoMode && !publishShareSheetOpen && !mustRenderEditor) {
+  // Or if preview mode is explicitly requested (via ?mode=preview query param or initialPreviewMode prop)
+  if (isPublished && actualSessionId && !demoMode && !publishShareSheetOpen && !mustRenderEditor && !initialPreviewMode) {
     return (
       <div className="min-h-screen sporty-bg">
         <TopNav showCreateNow={false} />
@@ -1701,9 +1706,9 @@ export function SessionInvite({
               onPreview={
                 actualSessionId
                   ? () => {
-                      router.push(`/session/${actualSessionId}?from=analytics`)
+                      router.push(`/host/sessions/${actualSessionId}/edit?mode=preview`)
                     }
-                  : () => {}
+                  : undefined // Pass undefined so EditorBottomBar can use fallback from useParams()
               }
               onEdit={
                 actualSessionId
@@ -1739,8 +1744,8 @@ export function SessionInvite({
       {/* Top Navigation - show in edit mode or demo mode */}
       <TopNav showCreateNow={false} />
 
-      {/* Back to Analytics Button - only show if from analytics and session is live */}
-      {isEditMode && !isPreviewMode && sessionStatus === "open" && searchParams.get("from") === "analytics" && actualSessionId && (
+      {/* Go to Analytics Button - show when session is live and in edit mode */}
+      {isEditMode && !isPreviewMode && sessionStatus === "open" && actualSessionId && (
         <div className="fixed top-16 left-4 z-50">
           <Button
             onClick={() => router.push(`/host/sessions/${actualSessionId}/edit`)}
@@ -1752,8 +1757,8 @@ export function SessionInvite({
                 : "bg-white/80 border-black/20 text-black hover:bg-white"
             )}
           >
-            <ArrowLeft className="w-4 h-4" />
-            <span className="text-sm font-medium">Back to analytics</span>
+            <ChevronRight className="w-4 h-4" />
+            <span className="text-sm font-medium">Go to Analytics</span>
           </Button>
         </div>
       )}
@@ -1795,6 +1800,9 @@ export function SessionInvite({
               onClick={() => {
                 if (demoMode) {
                   router.push("/host/sessions/new/edit")
+                } else if (actualSessionId) {
+                  // Navigate to edit mode with query param
+                  router.push(`/host/sessions/${actualSessionId}/edit?mode=edit`)
                 } else {
                   handlePreviewModeChange(false)
                 }
@@ -2843,9 +2851,9 @@ export function SessionInvite({
         </DialogContent>
       </Dialog>
 
-      {/* Editor Bottom Bar - Edit mode only OR when published (shows Edit button) */}
+      {/* Editor Bottom Bar - Edit mode only (analytics view has its own EditorBottomBar above) */}
       <AnimatePresence>
-      {(isEditMode && !isPreviewMode) || isPublished ? (
+      {(isEditMode && !isPreviewMode) && !(isPublished && !isEditMode) ? (
           <motion.div
             key="editorbar"
             initial={{ y: 12, opacity: 0 }}
@@ -2926,6 +2934,7 @@ export function SessionInvite({
         publishedUrl={publishedUrl}
         hostSlug={publishedHostSlug}
         publicCode={publishedCode}
+        sessionId={actualSessionId}
         uiMode={uiMode}
       />
 
@@ -3004,13 +3013,14 @@ export function SessionInvite({
                     </Button>
                   </>
                 ) : rsvpState === "joined" ? (
-                  <Button
-                    onClick={onDeclineClick || undefined}
-                    variant="outline"
-                    className={`flex-1 bg-transparent ${uiMode === "dark" ? "border-white/20 text-white hover:bg-white/10" : "border-black/20 text-black hover:bg-black/10"} rounded-full h-12`}
-                  >
-                    Decline instead
-                  </Button>
+                  <div className="flex justify-center w-full">
+                    <Button
+                      onClick={onDeclineClick || undefined}
+                      className="bg-red-500/20 text-white rounded-full h-12 border border-red-500/40 hover:bg-red-500/40 hover:text-white shadow-none px-6"
+                    >
+                      Decline
+                    </Button>
+                  </div>
                 ) : (
                   <Button 
                     onClick={onJoinClick || undefined}
@@ -3020,20 +3030,6 @@ export function SessionInvite({
                   </Button>
                 )}
               </div>
-              {/* Light/Dark toggle for preview mode */}
-              {isPreviewMode && (
-                <button
-                  onClick={() => setUiMode(uiMode === "dark" ? "light" : "dark")}
-                  className={`w-12 h-12 rounded-full ${glassPill} flex items-center justify-center transition-colors`}
-                  aria-label={uiMode === "dark" ? "Switch to light mode" : "Switch to dark mode"}
-                >
-                  {uiMode === "dark" ? (
-                    <Sun className="w-5 h-5" />
-                  ) : (
-                    <Moon className="w-5 h-5" />
-                  )}
-                </button>
-              )}
             </div>
           </div>
         </motion.div>
