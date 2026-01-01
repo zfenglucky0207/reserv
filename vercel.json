@@ -1,19 +1,4 @@
 {
-  "version": 2,
-  "builds": [
-    {
-      "src": "api/qr_service.py",
-      "use": "@vercel/python"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/qr/(.*)",
-      "dest": "/api/qr_service.py"
-    }
-  ],
-  "env": {
-    "PYTHONPATH": "/var/task"
-  }
+  "version": 2
 }
 
