@@ -1,0 +1,24 @@
+# Ignore Python files completely (deployed separately on Render)
+api/
+*.py
+*.pyc
+*.pyo
+*.pyd
+requirements.txt
+requirements*.txt
+setup.py
+pyproject.toml
+Pipfile
+poetry.lock
+__pycache__/
+.Python
+venv/
+.venv/
+env/
+.python-version
+Dockerfile
+render.yaml
+ocr_scan.py
+qr_autofill.py
+.disabled-api/
+

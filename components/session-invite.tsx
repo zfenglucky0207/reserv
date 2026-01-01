@@ -1827,16 +1827,16 @@ export function SessionInvite({
         <div className="absolute top-16 left-4 z-50">
           <Button
             onClick={() => router.push(`/host/sessions/${actualSessionId}/edit`)}
-            variant="outline"
+            variant="ghost"
             className={cn(
               "rounded-full h-10 px-4 gap-2 backdrop-blur-xl border shadow-lg",
               uiMode === "dark"
                 ? "bg-black/40 border-white/20 text-white hover:bg-black/60"
-                : "bg-white/80 border-black/20 text-black hover:bg-white"
+                : "bg-white/80 border-black/20 text-black hover:bg-white/90"
             )}
           >
             <ChevronRight className="w-4 h-4" />
-            <span className="text-sm font-medium">Go to Analytics</span>
+            <span className="text-sm font-medium">Go to Session Control</span>
           </Button>
         </div>
       )}
@@ -1899,12 +1899,12 @@ export function SessionInvite({
         <div className="absolute top-30 left-4 z-50">
           <Button
             onClick={() => router.push(`/host/sessions/${actualSessionId}/edit`)}
-            variant="outline"
+            variant="ghost"
             className={cn(
               "rounded-full h-10 px-4 gap-2 backdrop-blur-xl border shadow-lg",
               uiMode === "dark"
                 ? "bg-black/40 border-white/20 text-white hover:bg-black/60"
-                : "bg-white/80 border-black/20 text-black hover:bg-white"
+                : "bg-white/10 border-black/20 text-black hover:bg-white/20"
             )}
           >
             <ChevronRight className="w-4 h-4" />

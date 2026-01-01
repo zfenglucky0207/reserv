@@ -160,7 +160,18 @@ export function EditorBottomBar({
               </div>
             </motion.div>
           )}
-          <div className="bg-black/40 backdrop-blur-xl border border-white/10 rounded-2xl p-4 shadow-2xl">
+          <div
+            className={cn(
+              "backdrop-blur-xl rounded-2xl p-4 shadow-2xl border",
+              uiMode === "dark"
+                ? "bg-black/40 border-white/10"
+                // Change here: bg-white/80 gives solid white with opacity for light mode
+                : "bg-white/80 border-black/10"
+            )}
+            // If you want even stronger transparency, you can use 'bg-white/70', adjust to taste
+            // style override in case you want an exact value:
+            // style={{ backgroundColor: uiMode === "light" ? "rgba(255,255,255,0.80)" : undefined }}
+          >
             {/* Icon Buttons Row */}
             <div className="flex items-center justify-around mb-3">
               {/* Unpublish Button (when published) or Theme Button (when not published) */}
@@ -183,10 +194,25 @@ export function EditorBottomBar({
                 </button>
               ) : (
                 <button onClick={() => setThemeDrawerOpen(true)} className="flex flex-col items-center gap-1.5 group">
-                  <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
-                    <Palette className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
+                  <div className={cn(
+                    "w-12 h-12 rounded-full transition-colors flex items-center justify-center",
+                    uiMode === "dark"
+                      ? "bg-white/5 hover:bg-white/10"
+                      : "bg-black/5 hover:bg-black/10"
+                  )}>
+                    <Palette className={cn(
+                      "w-5 h-5 transition-colors",
+                      uiMode === "dark"
+                        ? "text-white/80 group-hover:text-white"
+                        : "text-black/80 group-hover:text-black"
+                    )} />
                   </div>
-                  <span className="text-xs text-white/60 group-hover:text-white/80 transition-colors">Theme</span>
+                  <span className={cn(
+                    "text-xs transition-colors",
+                    uiMode === "dark"
+                      ? "text-white/60 group-hover:text-white/80"
+                      : "text-black/60 group-hover:text-black/80"
+                  )}>Theme</span>
                 </button>
               )}
 
@@ -195,14 +221,24 @@ export function EditorBottomBar({
                 onClick={() => onUiModeChange(uiMode === "dark" ? "light" : "dark")}
                 className="flex flex-col items-center gap-1.5 group"
               >
-                <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
+                <div className={cn(
+                  "w-12 h-12 rounded-full transition-colors flex items-center justify-center",
+                  uiMode === "dark"
+                    ? "bg-white/5 hover:bg-white/10"
+                    : "bg-black/5 hover:bg-black/10"
+                )}>
                   {uiMode === "dark" ? (
                     <Sun className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
                   ) : (
-                    <Moon className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
+                    <Moon className="w-5 h-5 text-black/80 group-hover:text-black transition-colors" />
                   )}
                 </div>
-                <span className="text-xs text-white/60 group-hover:text-white/80 transition-colors">
+                <span className={cn(
+                  "text-xs transition-colors",
+                  uiMode === "dark"
+                    ? "text-white/60 group-hover:text-white/80"
+                    : "text-black/60 group-hover:text-black/80"
+                )}>
                   {uiMode === "dark" ? "Light" : "Dark"}
                 </span>
               </button>
@@ -210,19 +246,49 @@ export function EditorBottomBar({
               {/* Drafts Button */}
               {onDrafts && (
                 <button onClick={onDrafts} className="flex flex-col items-center gap-1.5 group">
-                  <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
-                    <FileText className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
+                  <div className={cn(
+                    "w-12 h-12 rounded-full transition-colors flex items-center justify-center",
+                    uiMode === "dark"
+                      ? "bg-white/5 hover:bg-white/10"
+                      : "bg-black/5 hover:bg-black/10"
+                  )}>
+                    <FileText className={cn(
+                      "w-5 h-5 transition-colors",
+                      uiMode === "dark"
+                        ? "text-white/80 group-hover:text-white"
+                        : "text-black/80 group-hover:text-black"
+                    )} />
                   </div>
-                  <span className="text-xs text-white/60 group-hover:text-white/80 transition-colors">Drafts</span>
+                  <span className={cn(
+                    "text-xs transition-colors",
+                    uiMode === "dark"
+                      ? "text-white/60 group-hover:text-white/80"
+                      : "text-black/60 group-hover:text-black/80"
+                  )}>Drafts</span>
                 </button>
               )}
 
               {/* Preview Button */}
               <button onClick={handlePreviewClick} className="flex flex-col items-center gap-1.5 group">
-                <div className="w-12 h-12 rounded-full bg-white/5 hover:bg-white/10 transition-colors flex items-center justify-center">
-                  <Eye className="w-5 h-5 text-white/80 group-hover:text-white transition-colors" />
+                <div className={cn(
+                  "w-12 h-12 rounded-full transition-colors flex items-center justify-center",
+                  uiMode === "dark"
+                    ? "bg-white/5 hover:bg-white/10"
+                    : "bg-black/5 hover:bg-black/10"
+                )}>
+                  <Eye className={cn(
+                    "w-5 h-5 transition-colors",
+                    uiMode === "dark"
+                      ? "text-white/80 group-hover:text-white"
+                      : "text-black/80 group-hover:text-black"
+                  )} />
                 </div>
-                <span className="text-xs text-white/60 group-hover:text-white/80 transition-colors">Preview</span>
+                <span className={cn(
+                  "text-xs transition-colors",
+                  uiMode === "dark"
+                    ? "text-white/60 group-hover:text-white/80"
+                    : "text-black/60 group-hover:text-black/80"
+                )}>Preview</span>
               </button>
             </div>
 
@@ -243,7 +309,12 @@ export function EditorBottomBar({
                     <Button
                       onClick={handleSaveDraftClick}
                       variant="outline"
-                      className="flex-1 border-white/20 bg-white/5 hover:bg-white/10 text-white font-medium rounded-full h-12"
+                      className={cn(
+                        "flex-1 font-medium rounded-full h-12",
+                        uiMode === "dark"
+                          ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                          : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
+                      )}
                     >
                       {saveDraftLabel}
                     </Button>
