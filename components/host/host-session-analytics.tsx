@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -14,6 +15,7 @@ import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight } f
 import { formatDistanceToNow, format, isPast, isFuture, parseISO } from "date-fns"
 import { CopyInviteLinkButton } from "@/components/common/copy-invite-link-button"
 import { SaveDraftGuardModal } from "@/components/host/save-draft-guard-modal"
+import { PaymentsReviewView } from "@/components/host/payments-review-view"
 
 interface HostSessionAnalyticsProps {
   sessionId: string
@@ -43,11 +45,21 @@ interface AnalyticsData {
 }
 
 export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalyticsProps) {
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const { toast } = useToast()
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
   const [unpublishDialogOpen, setUnpublishDialogOpen] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
+
+  // Check if we should show payments view
+  const mode = searchParams.get("mode")
+  const showPaymentsView = mode === "payments"
+
+  const handleBackFromPayments = () => {
+    router.push(`/host/sessions/${sessionId}/edit`)
+  }
   
   // Quick settings local state (TODO: persist to DB)
   const [quickSettings, setQuickSettings] = useState({
@@ -193,6 +205,11 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
   const statusBadge = getStatusBadge(analytics.sessionStatus)
   const spotsLeft = Math.max(0, analytics.attendance.capacity - analytics.attendance.accepted)
 
+  // Show payments view if mode=payments
+  if (showPaymentsView) {
+    return <PaymentsReviewView sessionId={sessionId} uiMode={uiMode} onBack={handleBackFromPayments} />
+  }
+
   return (
     <div className={cn("min-h-screen", uiMode === "dark" ? "bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900" : "bg-white")}>
       <div className="space-y-4 p-4 pb-24">
@@ -328,6 +345,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
               </div>
               {analytics.payments.total > 0 && (
                 <Button
+                  onClick={() => router.push(`/host/sessions/${sessionId}/edit?mode=payments`)}
                   variant="outline"
                   size="sm"
                   className={cn(
@@ -337,7 +355,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
                       : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
                   )}
                 >
-                  Review
+                  View payment uploads
                   <ChevronRight className="w-4 h-4 ml-1" />
                 </Button>
               )}

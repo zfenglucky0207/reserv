@@ -41,7 +41,7 @@ import type { DraftData, DraftSummary } from "@/app/actions/drafts"
 import { listDrafts, saveDraft, getDraft, deleteDraft, overwriteDraft } from "@/app/actions/drafts"
 import { PublishShareSheet } from "@/components/publish-share-sheet"
 import { HostSessionAnalytics } from "@/components/host/host-session-analytics"
-import { CopyInviteLinkButton } from "@/components/common/copy-invite-link-button"
+import { Share2 } from "lucide-react"
 
 // Default cover background colors by sport (when no cover image is set)
 const DEFAULT_COVER_BG: Record<string, string> = {
@@ -241,6 +241,39 @@ export function SessionInvite({
     }
   }
 
+  // Handle share invite link
+  const handleShareInviteLink = async () => {
+    if (!actualSessionId) return
+
+    try {
+      const { getPublishedSessionInfo } = await import("@/app/host/sessions/[id]/actions")
+      const result = await getPublishedSessionInfo(actualSessionId)
+
+      if (!result.ok) {
+        toast({
+          title: "Cannot share invite",
+          description: result.error || "Session is not published yet.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      const inviteLink = `${window.location.origin}/${result.hostSlug}/${result.publicCode}`
+      setPublishedUrl(inviteLink)
+      setPublishedHostSlug(result.hostSlug)
+      setPublishedCode(result.publicCode)
+      setIsShareFromButton(true) // Mark as opened from share button
+      setPublishShareSheetOpen(true)
+    } catch (error: any) {
+      console.error("[handleShareInviteLink] Error:", error)
+      toast({
+        title: "Failed to share invite",
+        description: error?.message || "Please try again.",
+        variant: "destructive",
+      })
+    }
+  }
+
   // Update actualSessionId when sessionId prop changes
   useEffect(() => {
     if (sessionId) {
@@ -261,6 +294,7 @@ export function SessionInvite({
   const [publishedUrl, setPublishedUrl] = useState("")
   const [publishedHostSlug, setPublishedHostSlug] = useState("")
   const [publishedCode, setPublishedCode] = useState("")
+  const [isShareFromButton, setIsShareFromButton] = useState(false) // Track if opened from share button vs publish
 
   // Placeholder constants for validation
   const PLACEHOLDERS = {
@@ -765,24 +799,67 @@ export function SessionInvite({
     }
   }, [isLocationModalOpen, eventLocation, eventMapUrl])
 
-  // Helper function to convert map URL to embed URL
-  const getMapEmbedSrc = (mapUrl: string, location: string): string => {
-    if (mapUrl && mapUrl.includes("google.com/maps")) {
-      // Try to extract place ID or coordinates from the URL (simple approach)
-      // If we can't parse it properly, fall back to query-based embed
-      try {
-        // Check if it's already an embed URL
-        if (mapUrl.includes("/embed")) {
-          return mapUrl
-        }
-        // For now, use query-based fallback for simplicity
-        return `https://www.google.com/maps?q=${encodeURIComponent(location)}&output=embed`
-      } catch {
-        return `https://www.google.com/maps?q=${encodeURIComponent(location)}&output=embed`
-      }
+  // Helper function to validate if a string is a valid Google Maps URL
+  const isValidGoogleMapsUrl = (value: string | null | undefined): boolean => {
+    if (!value || !value.trim()) {
+      return false
     }
-    // Fallback to query-based embed using location text
-    return `https://www.google.com/maps?q=${encodeURIComponent(location)}&output=embed`
+
+    try {
+      const url = new URL(value.trim())
+      const hostname = url.hostname.toLowerCase()
+      
+      // Check if hostname is a Google Maps domain
+      const isGoogleMapsDomain = 
+        hostname.includes("google.com") ||
+        hostname.includes("maps.app.goo.gl") ||
+        hostname.includes("goo.gl") ||
+        hostname === "maps.google.com"
+      
+      if (!isGoogleMapsDomain) {
+        return false
+      }
+      
+      // Check if pathname indicates maps (for google.com domains)
+      if (hostname.includes("google.com") && !url.pathname.includes("/maps")) {
+        return false
+      }
+      
+      return true
+    } catch {
+      // Not a valid URL
+      return false
+    }
+  }
+
+  // Helper function to get the Google Maps URL to embed (checks both eventMapUrl and eventLocation)
+  const getValidGoogleMapsUrl = (): string | null => {
+    // First check eventMapUrl (dedicated map URL field)
+    if (eventMapUrl && isValidGoogleMapsUrl(eventMapUrl)) {
+      return eventMapUrl.trim()
+    }
+    
+    // Then check eventLocation (might contain a Google Maps URL)
+    if (eventLocation && isValidGoogleMapsUrl(eventLocation)) {
+      return eventLocation.trim()
+    }
+    
+    return null
+  }
+
+  // Helper function to convert map URL to embed URL
+  const getMapEmbedSrc = (mapUrl: string): string => {
+    try {
+      // Check if it's already an embed URL
+      if (mapUrl.includes("/embed")) {
+        return mapUrl
+      }
+      // Convert to embed URL
+      return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
+    } catch {
+      // Fallback
+      return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
+    }
   }
 
   const handleLocationSave = () => {
@@ -1266,6 +1343,7 @@ export function SessionInvite({
         setPublishedUrl(inviteLink)
         setPublishedHostSlug(result.hostSlug)
         setPublishedCode(result.publicCode)
+        setIsShareFromButton(false) // Mark as opened from publish
         
         // Update actualSessionId if session was created
         const finalSessionId = result.sessionId || publishSessionId || actualSessionId
@@ -1746,7 +1824,7 @@ export function SessionInvite({
 
       {/* Go to Analytics Button - show when session is live and in edit mode */}
       {isEditMode && !isPreviewMode && sessionStatus === "open" && actualSessionId && (
-        <div className="fixed top-16 left-4 z-50">
+        <div className="absolute top-16 left-4 z-50">
           <Button
             onClick={() => router.push(`/host/sessions/${actualSessionId}/edit`)}
             variant="outline"
@@ -1816,6 +1894,26 @@ export function SessionInvite({
         )}
       </AnimatePresence>
 
+      {/* Go to Analytics Button - show when session is live and in preview mode */}
+      {isPreviewMode && sessionStatus === "open" && actualSessionId && (
+        <div className="absolute top-30 left-4 z-50">
+          <Button
+            onClick={() => router.push(`/host/sessions/${actualSessionId}/edit`)}
+            variant="outline"
+            className={cn(
+              "rounded-full h-10 px-4 gap-2 backdrop-blur-xl border shadow-lg",
+              uiMode === "dark"
+                ? "bg-black/40 border-white/20 text-white hover:bg-black/60"
+                : "bg-white/80 border-black/20 text-black hover:bg-white"
+            )}
+          >
+            <ChevronRight className="w-4 h-4" />
+            <span className="text-sm font-medium">Go to Analytics</span>
+          </Button>
+        </div>
+      )}
+
+
       {/* Main Content - Hero Section */}
       <LayoutGroup>
       <div className="relative">
@@ -1860,7 +1958,7 @@ export function SessionInvite({
             {/* Scroll Cue - Only show in preview/public mode when not scrolled */}
             {(!isEditMode || isPreviewMode) && !scrolled && (
               <motion.div
-                className="absolute left-0 right-0 bottom-24 z-20 flex justify-center pointer-events-none"
+                className="absolute left-0 right-0 bottom-34 z-20 flex justify-center pointer-events-none"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.4 }}
@@ -1886,7 +1984,7 @@ export function SessionInvite({
             <motion.div
               layout
               transition={{ duration: 0.22, ease: "easeOut" }}
-              className={`relative z-10 flex flex-col min-h-[85vh] px-6 pb-8 ${
+              className={`relative z-10 flex flex-col min-h-[85vh] px-6 pb-8 text-white ${
                 isEditMode && !isPreviewMode ? "pt-16" : "pt-24"
               }`}
             >
@@ -2008,7 +2106,7 @@ export function SessionInvite({
                       <motion.h1
                         layout
                         transition={{ duration: 0.22, ease: "easeOut" }}
-                        className={`text-4xl font-bold ${uiMode === "dark" ? "text-black" : "text-white"} ${isPreviewMode ? "text-left" : "text-center"} ${TITLE_FONTS[titleFont]} ${!eventTitle ? "italic opacity-60" : ""}`}
+                        className={`text-4xl font-bold text-white ${isPreviewMode ? "text-left" : "text-center"} ${TITLE_FONTS[titleFont]} ${!eventTitle ? "italic opacity-60" : ""}`}
                       >
                         {eventTitle || "Enter title here"}
                       </motion.h1>
@@ -2131,28 +2229,28 @@ export function SessionInvite({
                       /* Preview mode shows regular text display */
                       <div className="space-y-4">
                         <div className="flex items-start gap-3">
-                          <Calendar className={`w-5 h-5 ${uiMode === "dark" ? "text-black/60" : "text-white/60"} mt-0.5`} />
-                          <p className={`text-base ${uiMode === "dark" ? "text-black" : "text-white"} ${!eventDate ? "italic opacity-60" : ""}`}>
+                          <Calendar className="w-5 h-5 text-white/60 mt-0.5" />
+                          <p className={`text-base text-white ${!eventDate ? "italic opacity-60" : ""}`}>
                             {eventDate || "Choose date"}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
-                          <MapPin className={`w-5 h-5 ${uiMode === "dark" ? "text-black/60" : "text-white/60"} mt-0.5`} />
-                          <p className={`text-base ${uiMode === "dark" ? "text-black" : "text-white"} ${!eventLocation ? "italic opacity-60" : ""}`}>
+                          <MapPin className="w-5 h-5 text-white/60 mt-0.5" />
+                          <p className={`text-base text-white ${!eventLocation ? "italic opacity-60" : ""}`}>
                             {eventLocation || "Enter location"}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
-                          <DollarSign className={`w-5 h-5 ${uiMode === "dark" ? "text-black/60" : "text-white/60"} mt-0.5`} />
-                          <p className={`text-base ${uiMode === "dark" ? "text-black" : "text-white"} ${!eventPrice || eventPrice === 0 ? "italic opacity-60" : ""}`}>
+                          <DollarSign className="w-5 h-5 text-white/60 mt-0.5" />
+                          <p className={`text-base text-white ${!eventPrice || eventPrice === 0 ? "italic opacity-60" : ""}`}>
                             {eventPrice && eventPrice > 0 
                               ? `$${eventPrice} ${demoMode ? "per chick" : "per person"}` 
                               : "Enter cost"}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
-                          <Users className={`w-5 h-5 ${uiMode === "dark" ? "text-black/60" : "text-white/60"} mt-0.5`} />
-                          <p className={`text-base ${uiMode === "dark" ? "text-black" : "text-white"} ${!eventCapacity || eventCapacity === 0 ? "italic opacity-60" : ""}`}>
+                          <Users className="w-5 h-5 text-white/60 mt-0.5" />
+                          <p className={`text-base text-white ${!eventCapacity || eventCapacity === 0 ? "italic opacity-60" : ""}`}>
                             {eventCapacity && eventCapacity > 0 ? `${eventCapacity} spots total` : "Enter number of spots"}
                           </p>
                         </div>
@@ -2171,7 +2269,7 @@ export function SessionInvite({
                     >
                     <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)]" />
                     <div>
-                        <p className={`text-xs ${uiMode === "dark" ? "text-black/70" : "text-white/70"} uppercase tracking-wide`}>Hosted by</p>
+                        <p className="text-xs text-white/70 uppercase tracking-wide">Hosted by</p>
                       {isEditMode && !isPreviewMode ? (
                         <input
                           type="text"
@@ -2197,7 +2295,7 @@ export function SessionInvite({
                             placeholder={getUserProfileName() ?? "Your name"}
                         />
                       ) : (
-                          <p className={`font-medium ${uiMode === "dark" ? "text-black" : "text-white"} ${!displayHostName || displayHostName === "Your name" ? "italic opacity-60" : ""}`}>
+                          <p className={`font-medium text-white ${!displayHostName || displayHostName === "Your name" ? "italic opacity-60" : ""}`}>
                             {displayHostName || "Your name"}
                           </p>
                       )}
@@ -2221,7 +2319,7 @@ export function SessionInvite({
             transition={{ duration: 0.4, delay: 0.1 }}
           >
             <Card className={`${glassCard} p-6`}>
-              <h2 className={`text-lg font-semibold ${strongText} mb-3`}>About this session</h2>
+              <h2 className={`text-lg font-semibold ${strongText} mb-2`}>About this session</h2>
               {isEditMode && !isPreviewMode ? (
                 <textarea
                   ref={textareaRef}
@@ -2239,40 +2337,51 @@ export function SessionInvite({
             </Card>
           </motion.div>
 
-          {(!isEditMode || isPreviewMode) && (
+          {(!isEditMode || isPreviewMode) && eventLocation && (
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.2 }}
             >
               <Card className={`${glassCard} p-6`}>
-                <h2 className={`text-lg font-semibold ${strongText} mb-3`}>Location</h2>
+                <h2 className={`text-lg font-semibold ${strongText} mb-2`}>Location</h2>
                 <p className={`${mutedText} text-sm mb-4`}>{eventLocation}</p>
-                {demoMode ? (
-                  <div className="w-full h-48 rounded-lg overflow-hidden bg-gradient-to-br from-lime-100 to-emerald-100 flex items-center justify-center">
-                    <div className="text-center">
-                      <MapPin className="w-12 h-12 mx-auto mb-2 text-lime-600" />
-                      <p className="text-sm text-black font-medium">Map preview (demo)</p>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="w-full h-48 rounded-lg overflow-hidden bg-slate-800">
-                    <iframe
-                      width="100%"
-                      height="100%"
-                      frameBorder="0"
-                      src={getMapEmbedSrc(eventMapUrl, eventLocation)}
-                      style={{ border: 0 }}
-                      allowFullScreen
-                      loading="lazy"
-                    />
-                    {!eventMapUrl && (
-                      <p className={`text-xs ${mutedText} mt-2`}>
-                        Map is approximate in beta. Paste a Google Maps link for a precise embed.
-                      </p>
-                    )}
-                  </div>
-                )}
+                {(() => {
+                  // Only show map embed if there's a valid Google Maps URL
+                  const validMapUrl = getValidGoogleMapsUrl()
+                  
+                  // Demo mode
+                  if (demoMode) {
+                    return (
+                      <div className="w-full h-48 rounded-lg overflow-hidden bg-gradient-to-br from-lime-100 to-emerald-100 flex items-center justify-center">
+                        <div className="text-center">
+                          <MapPin className="w-12 h-12 mx-auto mb-2 text-lime-600" />
+                          <p className="text-sm text-black font-medium">Map preview (demo)</p>
+                        </div>
+                      </div>
+                    )
+                  }
+                  
+                  // Only show map iframe if we have a valid Google Maps URL
+                  if (validMapUrl) {
+                    return (
+                      <div className="w-full h-48 rounded-lg overflow-hidden bg-slate-800">
+                        <iframe
+                          width="100%"
+                          height="100%"
+                          frameBorder="0"
+                          src={getMapEmbedSrc(validMapUrl)}
+                          style={{ border: 0 }}
+                          allowFullScreen
+                          loading="lazy"
+                        />
+                      </div>
+                    )
+                  }
+                  
+                  // No valid map URL - don't show map embed at all
+                  return null
+                })()}
               </Card>
             </motion.div>
           )}
@@ -2284,7 +2393,7 @@ export function SessionInvite({
               transition={{ duration: 0.4, delay: 0.3 }}
             >
               <Card className={`${glassCard} p-6`}>
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-2">
                   <h2 className={`text-lg font-semibold ${strongText}`}>Going</h2>
                   <Badge className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border-[var(--theme-accent)]/30">
                     {demoParticipants.length} / {eventCapacity}
@@ -2475,7 +2584,7 @@ export function SessionInvite({
               transition={{ duration: 0.4, delay: 0.5 }}
             >
               <Card className={`${glassCard} p-6`}>
-                <h2 className={`text-lg font-semibold ${strongText} mb-3`}>Upload payment proof</h2>
+                <h2 className={`text-lg font-semibold ${strongText} mb-2`}>Upload payment proof</h2>
                 <p className={`text-sm ${mutedText} mb-4`}>
                   Please upload your payment confirmation to secure your spot.
                 </p>
@@ -2915,20 +3024,24 @@ export function SessionInvite({
         open={publishShareSheetOpen}
         onOpenChange={(open) => {
           setPublishShareSheetOpen(open)
-          // When share sheet closes, handle navigation and switch to analytics view
-          if (!open && publishedCode) {
-            // Navigate to new session URL if needed (only if session was created)
-            if (typeof window !== "undefined") {
-              const pendingNavigateId = sessionStorage.getItem("pending_navigate_to_session")
-              if (pendingNavigateId) {
-                sessionStorage.removeItem("pending_navigate_to_session")
-                router.replace(`/host/sessions/${pendingNavigateId}/edit`)
+          if (!open) {
+            // Only handle navigation when opened from publish (not from share button)
+            if (!isShareFromButton && publishedCode) {
+              // Navigate to new session URL if needed (only if session was created)
+              if (typeof window !== "undefined") {
+                const pendingNavigateId = sessionStorage.getItem("pending_navigate_to_session")
+                if (pendingNavigateId) {
+                  sessionStorage.removeItem("pending_navigate_to_session")
+                  router.replace(`/host/sessions/${pendingNavigateId}/edit`)
+                }
               }
+              // Mark as published and switch to analytics view
+              setIsPublished(true)
+              setIsEditMode(false)
+              setIsPreviewMode(false)
             }
-            // Mark as published and switch to analytics view
-            setIsPublished(true)
-            setIsEditMode(false)
-            setIsPreviewMode(false)
+            // Reset share from button state
+            setIsShareFromButton(false)
           }
         }}
         publishedUrl={publishedUrl}
@@ -2936,13 +3049,15 @@ export function SessionInvite({
         publicCode={publishedCode}
         sessionId={actualSessionId}
         uiMode={uiMode}
+        title={isShareFromButton ? "Share invite link" : undefined}
+        description={isShareFromButton ? "Share your invite link with participants." : undefined}
       />
 
-      {/* Copy invite link button - Only show in host preview mode, above RSVP dock */}
+      {/* Share invite link button - Only show in host preview mode, above RSVP dock */}
       <AnimatePresence>
       {isPreviewMode && actualSessionId && !demoMode && (
         <motion.div
-          key="copy-link-bar"
+          key="share-link-bar"
           initial={{ y: 12, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
           exit={{ y: 12, opacity: 0 }}
@@ -2952,8 +3067,8 @@ export function SessionInvite({
         >
           <div className="mx-auto max-w-md px-4 pb-2">
             <div className={`${glassCard} rounded-2xl p-3 shadow-xl`}>
-              <CopyInviteLinkButton
-                sessionId={actualSessionId}
+              <Button
+                onClick={handleShareInviteLink}
                 variant="ghost"
                 className={cn(
                   "w-full justify-center",
@@ -2961,8 +3076,10 @@ export function SessionInvite({
                     ? "text-white hover:bg-white/10"
                     : "text-black hover:bg-black/10"
                 )}
-                label="Copy invite link"
-              />
+              >
+                <Share2 className="w-4 h-4 mr-2" />
+                Share invite link
+              </Button>
             </div>
           </div>
         </motion.div>
@@ -2994,26 +3111,26 @@ export function SessionInvite({
                 </div>
               )}
               
-              <div className="flex gap-3">
+              <div className="flex justify-center items-center gap-3 w-full">
                 {/* Show appropriate button based on RSVP state */}
                 {rsvpState === "none" ? (
                   <>
                     <Button 
                       onClick={onJoinClick || undefined}
-                      className="flex-1 bg-gradient-to-r from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] hover:from-[var(--theme-accent)] hover:to-[var(--theme-accent-dark)] text-black font-medium rounded-full h-12 shadow-lg shadow-[var(--theme-accent)]/20"
+                      className="flex-1 max-w-[170px] bg-gradient-to-r from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] hover:from-[var(--theme-accent)] hover:to-[var(--theme-accent-dark)] text-black font-medium rounded-full h-12 shadow-lg shadow-[var(--theme-accent)]/20"
                     >
                       Join session
                     </Button>
                     <Button
                       onClick={onDeclineClick || undefined}
                       variant="outline"
-                      className={`flex-1 bg-transparent ${uiMode === "dark" ? "border-white/20 text-white hover:bg-white/10" : "border-black/20 text-black hover:bg-black/10"} rounded-full h-12`}
+                      className={`flex-1 max-w-[130px] bg-transparent ${uiMode === "dark" ? "border-white/20 text-white hover:bg-white/10" : "border-black/20 text-black hover:bg-black/10"} rounded-full h-12`}
                     >
                       Decline
                     </Button>
                   </>
                 ) : rsvpState === "joined" ? (
-                  <div className="flex justify-center w-full">
+                  <div className="flex justify-center items-center w-full">
                     <Button
                       onClick={onDeclineClick || undefined}
                       className="bg-red-500/20 text-white rounded-full h-12 border border-red-500/40 hover:bg-red-500/40 hover:text-white shadow-none px-6"

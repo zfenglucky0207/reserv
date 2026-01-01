@@ -862,3 +862,163 @@ export async function updateDraftSession(
 
   return { ok: true }
 }
+
+/**
+ * Get payment uploads for a session (host-only)
+ */
+export async function getPaymentUploadsForSession(
+  sessionId: string
+): Promise<
+  | {
+      ok: true
+      uploads: Array<{
+        id: string
+        participantId: string
+        participantName: string
+        proofImageUrl: string | null
+        paymentStatus: "pending_review" | "approved" | "rejected"
+        createdAt: string
+        amount: number | null
+        currency: string | null
+      }>
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify session belongs to host
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id, host_id")
+    .eq("id", sessionId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  if (session.host_id !== userId) {
+    return { ok: false, error: "Unauthorized: You don't own this session" }
+  }
+
+  // Fetch payment proofs with participant info
+  // Note: proof_image_url may not be in generated types, so we cast to any to access it
+  const { data: paymentProofs, error: paymentError } = await supabase
+    .from("payment_proofs")
+    .select(
+      `
+      id,
+      participant_id,
+      payment_status,
+      created_at,
+      amount,
+      currency,
+      participants(display_name)
+    `
+    )
+    .eq("session_id", sessionId)
+    .order("created_at", { ascending: false })
+
+  if (paymentError) {
+    console.error("[getPaymentUploadsForSession] Error:", paymentError)
+    return { ok: false, error: paymentError.message }
+  }
+
+  // Fetch image URLs in a separate query since proof_image_url might not be in types
+  const proofIds = paymentProofs?.map((p) => p.id) || []
+  let imageUrls: Record<string, string | null> = {}
+  
+  if (proofIds.length > 0) {
+    const { data: proofImages } = await supabase
+      .from("payment_proofs")
+      .select("id, proof_image_url")
+      .in("id", proofIds)
+    
+    proofImages?.forEach((img: any) => {
+      imageUrls[img.id] = img.proof_image_url || null
+    })
+  }
+
+  const uploads =
+    paymentProofs?.map((proof) => {
+      const participant = proof.participants as { display_name: string } | null
+      return {
+        id: proof.id,
+        participantId: proof.participant_id,
+        participantName: participant?.display_name || "Unknown",
+        proofImageUrl: imageUrls[proof.id] || null,
+        paymentStatus: proof.payment_status as "pending_review" | "approved" | "rejected",
+        createdAt: proof.created_at,
+        amount: proof.amount,
+        currency: proof.currency,
+      }
+    }) || []
+
+  return { ok: true, uploads }
+}
+
+/**
+ * Confirm participant payment (update payment status to approved)
+ */
+export async function confirmParticipantPaid(
+  sessionId: string,
+  paymentProofId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify session belongs to host
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id, host_id")
+    .eq("id", sessionId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  if (session.host_id !== userId) {
+    return { ok: false, error: "Unauthorized: You don't own this session" }
+  }
+
+  // Verify payment proof belongs to this session
+  const { data: proof, error: proofError } = await supabase
+    .from("payment_proofs")
+    .select("id, session_id, payment_status")
+    .eq("id", paymentProofId)
+    .single()
+
+  if (proofError || !proof) {
+    return { ok: false, error: "Payment proof not found" }
+  }
+
+  if (proof.session_id !== sessionId) {
+    return { ok: false, error: "Payment proof does not belong to this session" }
+  }
+
+  // Update payment status to approved (idempotent - safe if already approved)
+  const { error: updateError } = await supabase
+    .from("payment_proofs")
+    .update({ payment_status: "approved", processed_at: new Date().toISOString() })
+    .eq("id", paymentProofId)
+
+  if (updateError) {
+    console.error("[confirmParticipantPaid] Error:", updateError)
+    return { ok: false, error: updateError.message }
+  }
+
+  // Revalidate paths
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+
+  return { ok: true }
+}

@@ -18,6 +18,8 @@ interface PublishShareSheetProps {
   publicCode: string
   sessionId?: string // Session ID for preview navigation
   uiMode: "dark" | "light"
+  title?: string // Optional custom title
+  description?: string // Optional custom description
 }
 
 export function PublishShareSheet({
@@ -28,6 +30,8 @@ export function PublishShareSheet({
   publicCode,
   sessionId,
   uiMode,
+  title = "Published 🎉",
+  description = "Your invite link is ready. Share it with your group.",
 }: PublishShareSheetProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -158,10 +162,10 @@ export function PublishShareSheet({
       >
         <DrawerHeader className="text-center">
           <DrawerTitle className={cn("text-2xl font-bold", uiMode === "dark" ? "text-white" : "text-black")}>
-            Published 🎉
+            {title}
           </DrawerTitle>
           <DrawerDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
-            Your invite link is ready. Share it with your group.
+            {description}
           </DrawerDescription>
         </DrawerHeader>
 
