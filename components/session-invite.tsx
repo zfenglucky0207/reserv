@@ -3534,8 +3534,7 @@ export function SessionInvite({
               glassCard,
               "border",
               rsvpState === "joined" && "border-emerald-400/15 bg-emerald-500/10",
-              rsvpState === "waitlisted" && "border-amber-400/15 bg-amber-500/10",
-              isPreviewMode && "pointer-events-none"
+              rsvpState === "waitlisted" && "border-amber-400/15 bg-amber-500/10"
             )}>
               {/* Celebration animation for joined state */}
               {rsvpState === "joined" && shouldCelebrate && !isPreviewMode && (

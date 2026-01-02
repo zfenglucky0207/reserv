@@ -39,13 +39,13 @@ export async function generateMetadata({
 }: {
   params: Promise<{ hostSlug: string; code: string }>
 }): Promise<Metadata> {
-  const { code } = await params
+  const { code, hostSlug } = await params
   const supabase = await createClient()
 
   // Fetch session for metadata
   const { data: session } = await supabase
     .from("sessions")
-    .select("title, host_name, cover_url, status")
+    .select("title, host_name, cover_url, status, start_at, location, sport")
     .eq("public_code", code)
     .single()
 
@@ -77,7 +77,37 @@ export async function generateMetadata({
 
   const title = session.title || "Session invite"
   const hostName = session.host_name || "Someone"
-  const description = `${hostName} is inviting you to a session!`
+  
+  // Generate description with session details
+  let description = `${hostName} is inviting you to a session!`
+  if (session.start_at || session.location || session.sport) {
+    const parts: string[] = []
+    if (session.start_at) {
+      try {
+        const startDate = parseISO(session.start_at)
+        const dayName = format(startDate, "EEE")
+        parts.push(`this ${dayName}`)
+      } catch (e) {
+        // Ignore date parsing errors
+      }
+    }
+    const sportLabel = session.sport ? (session.sport === "badminton" ? "badminton" : session.sport === "pickleball" ? "pickleball" : session.sport === "volleyball" ? "volleyball" : "sports") : null
+    const location = session.location || null
+    
+    if (sportLabel) {
+      description = `Join ${hostName} for a ${sportLabel} session`
+      if (parts.length > 0) {
+        description += ` ${parts[0]}`
+      }
+      if (location) {
+        description += ` at ${location}`
+      }
+      description += "!"
+    } else if (location) {
+      description = `Join ${hostName} ${parts.length > 0 ? `${parts[0]} ` : ""}at ${location}!`
+    }
+  }
+  
   const canonicalUrl = `${siteUrl}/${hostSlug}/${code}`
   const imageUrl = makeAbsoluteCoverUrl(siteUrl, session.cover_url)
 

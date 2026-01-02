@@ -21,6 +21,9 @@ interface PublishShareSheetProps {
   title?: string // Optional custom title
   description?: string // Optional custom description
   hostName?: string | null // Host name for share text
+  sessionStartAt?: string | null // Session start date for WhatsApp message
+  sessionLocation?: string | null // Session location for WhatsApp message
+  sessionSport?: string | null // Session sport for WhatsApp message
 }
 
 export function PublishShareSheet({
@@ -34,13 +37,53 @@ export function PublishShareSheet({
   title = "Published 🎉",
   description = "Your invite link is ready. Share it with your group.",
   hostName,
+  sessionStartAt,
+  sessionLocation,
+  sessionSport,
 }: PublishShareSheetProps) {
   const router = useRouter()
   const { toast } = useToast()
   const [copied, setCopied] = useState(false)
   
-  // Generate share text with host name invitation message
+  // Generate WhatsApp message with session details
+  const generateWhatsAppMessage = (): string => {
+    const host = hostName || "your friend"
+    const location = sessionLocation || "the venue"
+    
+    // Format sport label
+    let sportLabel = "session"
+    if (sessionSport) {
+      const sportLower = sessionSport.toLowerCase()
+      if (sportLower === "badminton") sportLabel = "badminton session"
+      else if (sportLower === "pickleball") sportLabel = "pickleball session"
+      else if (sportLower === "volleyball") sportLabel = "volleyball session"
+      else if (sportLower === "futsal") sportLabel = "futsal session"
+      else sportLabel = "sports session"
+    }
+    
+    // Format day from start_at
+    let dayText = ""
+    if (sessionStartAt) {
+      try {
+        const startDate = new Date(sessionStartAt)
+        const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+        const dayName = dayNames[startDate.getDay()]
+        // Use short format like "Sat" for brevity, but could use full name
+        const shortDayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
+        dayText = `this ${shortDayNames[startDate.getDay()]}`
+      } catch (e) {
+        dayText = "soon"
+      }
+    } else {
+      dayText = "soon"
+    }
+    
+    return `Join ${host} for a ${sportLabel} ${dayText} at ${location}!`
+  }
+  
+  // Generate share text with host name invitation message (fallback for non-WhatsApp shares)
   const shareText = `${hostName || "Your host"} is inviting you to a session!`
+  const whatsAppMessage = generateWhatsAppMessage()
 
   const glassCard = uiMode === "dark"
     ? "bg-black/30 border-white/20 text-white backdrop-blur-sm"
@@ -102,8 +145,9 @@ export function PublishShareSheet({
           // Fall through to deep link
         }
       }
-      // WhatsApp deep link (shareData.text already includes the URL)
-      const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(shareData.text)}`
+      // WhatsApp deep link with custom message
+      const whatsappText = `${whatsAppMessage}\n\n${publishedUrl}`
+      const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(whatsappText)}`
       window.open(whatsappUrl, "_blank")
       return
     }

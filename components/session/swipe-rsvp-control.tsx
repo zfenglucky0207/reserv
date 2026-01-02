@@ -67,14 +67,20 @@ export function SwipeRSVPControl({
 
   // Handle pointer down on knob OR track
   const handlePointerDown = (e: React.PointerEvent) => {
-    if (disabled || isPending || isPreviewMode) return
+    if (disabled || isPending) {
+      return
+    }
+
+    console.log("[SwipeRSVPControl] Pointer DOWN", { type: e.pointerType, button: e.button })
 
     e.preventDefault()
     e.stopPropagation()
+    
     setIsDragging(true)
     isDraggingRef.current = true
     
     const target = e.currentTarget as HTMLElement
+    const pointerId = e.pointerId
     
     const trackRect = trackRef.current?.getBoundingClientRect()
     if (!trackRect) {
@@ -83,17 +89,27 @@ export function SwipeRSVPControl({
       return
     }
 
-    // Capture pointer to this element
-    if (target.setPointerCapture && e.pointerId !== undefined) {
-      target.setPointerCapture(e.pointerId)
+    // Capture pointer - critical for iOS Safari
+    try {
+      if (target.setPointerCapture && pointerId !== undefined) {
+        target.setPointerCapture(pointerId)
+      }
+    } catch (err) {
+      console.warn("[SwipeRSVPControl] Failed to capture pointer:", err)
     }
 
     const startX = e.clientX
     const startOffset = x.get()
 
     const handleMove = (moveEvent: PointerEvent) => {
-      if (!isDraggingRef.current) return
+      if (!isDraggingRef.current) {
+        console.log("[SwipeRSVPControl] Move ignored - not dragging")
+        return
+      }
+      if (moveEvent.pointerId !== pointerId) return
+      
       moveEvent.preventDefault()
+      moveEvent.stopPropagation()
       
       const deltaX = moveEvent.clientX - startX
       const trackWidth = trackRect.width - THUMB_SIZE
@@ -106,10 +122,17 @@ export function SwipeRSVPControl({
     }
 
     const handleUp = (upEvent: PointerEvent) => {
-      upEvent.preventDefault()
+      if (upEvent.pointerId !== pointerId) return
       
-      if (target.releasePointerCapture && upEvent.pointerId !== undefined) {
-        target.releasePointerCapture(upEvent.pointerId)
+      upEvent.preventDefault()
+      upEvent.stopPropagation()
+      
+      try {
+        if (target.releasePointerCapture && pointerId !== undefined) {
+          target.releasePointerCapture(pointerId)
+        }
+      } catch (err) {
+        // Ignore release errors
       }
 
       const trackWidth = trackRect.width - THUMB_SIZE
@@ -117,27 +140,32 @@ export function SwipeRSVPControl({
       const threshold = centerOffset * THRESHOLD_PERCENT
       const currentX = x.get()
 
-      // Determine if threshold was crossed
-      if (currentX < -threshold && canAccept) {
-        commitAction("accept")
-      } else if (currentX > threshold && canDecline) {
-        commitAction("decline")
+      // Determine if threshold was crossed (but don't commit in preview mode)
+      if (!isPreviewMode) {
+        if (currentX < -threshold && canAccept) {
+          commitAction("accept")
+        } else if (currentX > threshold && canDecline) {
+          commitAction("decline")
+        } else {
+          // Snap back to center
+          x.set(0)
+        }
       } else {
-        // Snap back to center
+        // In preview mode, just snap back to center without committing
         x.set(0)
       }
 
       setIsDragging(false)
       isDraggingRef.current = false
-      target.removeEventListener("pointermove", handleMove as EventListener)
-      target.removeEventListener("pointerup", handleUp as EventListener)
-      target.removeEventListener("pointercancel", handleUp as EventListener)
+      window.removeEventListener("pointermove", handleMove)
+      window.removeEventListener("pointerup", handleUp)
+      window.removeEventListener("pointercancel", handleUp)
     }
 
-    // Use captured events on the target element (better for mobile)
-    target.addEventListener("pointermove", handleMove as EventListener)
-    target.addEventListener("pointerup", handleUp as EventListener)
-    target.addEventListener("pointercancel", handleUp as EventListener)
+    // Use window events (more reliable on iOS Safari)
+    window.addEventListener("pointermove", handleMove, { passive: false })
+    window.addEventListener("pointerup", handleUp, { passive: false })
+    window.addEventListener("pointercancel", handleUp, { passive: false })
   }
 
   const commitAction = async (action: "accept" | "decline") => {
@@ -240,13 +268,19 @@ export function SwipeRSVPControl({
           glassCard,
           "border",
           disabled && "opacity-50 cursor-not-allowed",
-          !disabled && !isPreviewMode && "cursor-grab active:cursor-grabbing"
+          !disabled && "cursor-grab active:cursor-grabbing"
         )}
+        style={{
+          WebkitUserSelect: "none",
+          userSelect: "none",
+          touchAction: "none",
+          WebkitTouchCallout: "none",
+        }}
         onPointerDown={handlePointerDown}
         role="slider"
         aria-label={getHintText() || "Swipe to accept or decline"}
-        aria-disabled={disabled || isPreviewMode}
-        tabIndex={disabled || isPreviewMode ? -1 : 0}
+        aria-disabled={disabled}
+        tabIndex={disabled ? -1 : 0}
         onKeyDown={(e) => {
           if (disabled || isPending || isPreviewMode) return
           
@@ -280,7 +314,7 @@ export function SwipeRSVPControl({
         )}
 
         {/* Labels */}
-        <div className="absolute inset-0 flex items-center justify-between px-6 pointer-events-none z-10">
+        <div className="absolute inset-0 flex items-center justify-between px-6 pointer-events-none z-0">
           <span
             className={cn(
               "text-sm font-medium transition-opacity duration-100",
@@ -301,45 +335,56 @@ export function SwipeRSVPControl({
           </span>
         </div>
 
-        {/* Thumb/Knob - draggable */}
+        {/* Thumb/Knob - draggable with larger hit area */}
         <motion.div
           ref={knobRef}
           className={cn(
-            "absolute top-1 bottom-1 rounded-full flex items-center justify-center z-20",
-            "bg-white/90 backdrop-blur-sm border border-white/30 shadow-lg",
-            "touch-none select-none cursor-grab active:cursor-grabbing",
-            uiMode === "light" && "bg-black/5 border-black/20"
+            "absolute top-0 bottom-0 rounded-full flex items-center justify-center z-30 pointer-events-auto",
+            "touch-none select-none cursor-grab active:cursor-grabbing"
           )}
           style={{
-            width: THUMB_SIZE,
-            height: THUMB_SIZE,
+            width: 56, // Larger hit area (56px = track height)
+            height: 56,
             x: springX,
             left: "50%",
-            marginLeft: -THUMB_SIZE / 2,
+            marginLeft: -28, // Center the larger hit area
+            WebkitUserSelect: "none",
+            userSelect: "none",
+            touchAction: "none",
+            WebkitTouchCallout: "none",
           }}
           onPointerDown={handlePointerDown}
-          animate={{
-            scale: isDragging ? 1.1 : 1,
-          }}
-          transition={{
-            type: "spring",
-            stiffness: 400,
-            damping: 25,
-          }}
         >
-          {isPending ? (
-            <Loader2 className={cn("w-5 h-5 animate-spin", uiMode === "dark" ? "text-gray-600" : "text-gray-400")} />
-          ) : (
-            <>
-              {committedAction === "accept" ? (
-                <Check className={cn("w-5 h-5", uiMode === "dark" ? "text-emerald-600" : "text-emerald-500")} />
-              ) : committedAction === "decline" ? (
-                <X className={cn("w-5 h-5", uiMode === "dark" ? "text-red-600" : "text-red-500")} />
-              ) : (
-                <div className={cn("w-2 h-2 rounded-full", uiMode === "dark" ? "bg-white/40" : "bg-black/30")} />
-              )}
-            </>
-          )}
+          {/* Visual knob (smaller than hit area) */}
+          <motion.div
+            className={cn(
+              "w-11 h-11 rounded-full flex items-center justify-center",
+              "bg-white/90 backdrop-blur-sm border border-white/30 shadow-lg",
+              uiMode === "light" && "bg-black/5 border-black/20"
+            )}
+            animate={{
+              scale: isDragging ? 1.1 : 1,
+            }}
+            transition={{
+              type: "spring",
+              stiffness: 400,
+              damping: 25,
+            }}
+          >
+            {isPending ? (
+              <Loader2 className={cn("w-5 h-5 animate-spin", uiMode === "dark" ? "text-gray-600" : "text-gray-400")} />
+            ) : (
+              <>
+                {committedAction === "accept" ? (
+                  <Check className={cn("w-5 h-5", uiMode === "dark" ? "text-emerald-600" : "text-emerald-500")} />
+                ) : committedAction === "decline" ? (
+                  <X className={cn("w-5 h-5", uiMode === "dark" ? "text-red-600" : "text-red-500")} />
+                ) : (
+                  <div className={cn("w-2 h-2 rounded-full", uiMode === "dark" ? "bg-white/40" : "bg-black/30")} />
+                )}
+              </>
+            )}
+          </motion.div>
         </motion.div>
 
         {/* Hidden buttons for screen readers */}

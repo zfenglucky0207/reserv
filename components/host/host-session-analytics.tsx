@@ -11,11 +11,11 @@ import { Badge } from "@/components/ui/badge"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
-import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight } from "lucide-react"
+import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight, Share2 } from "lucide-react"
 import { formatDistanceToNow, format, isPast, isFuture, parseISO } from "date-fns"
-import { CopyInviteLinkButton } from "@/components/common/copy-invite-link-button"
 import { SaveDraftGuardModal } from "@/components/host/save-draft-guard-modal"
 import { PaymentsReviewView } from "@/components/host/payments-review-view"
+import { PublishShareSheet } from "@/components/publish-share-sheet"
 
 interface HostSessionAnalyticsProps {
   sessionId: string
@@ -46,6 +46,10 @@ interface AnalyticsData {
   hostSlug: string | null
   publicCode: string | null
   waitlistEnabled: boolean
+  hostName: string | null
+  location: string | null
+  sport: string | null
+  title: string | null
 }
 
 export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalyticsProps) {
@@ -56,6 +60,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
   const [loading, setLoading] = useState(true)
   const [unpublishDialogOpen, setUnpublishDialogOpen] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
+  const [shareSheetOpen, setShareSheetOpen] = useState(false)
 
   // Check if we should show payments view
   const mode = searchParams.get("mode")
@@ -92,6 +97,10 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             hostSlug: result.hostSlug,
             publicCode: result.publicCode,
             waitlistEnabled: result.waitlistEnabled,
+            hostName: result.hostName,
+            location: result.location,
+            sport: result.sport,
+            title: result.title,
           })
           
           // Initialize requirePaymentProof based on price
@@ -227,17 +236,22 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
           <h1 className={cn("text-2xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
             Session control
           </h1>
-          <CopyInviteLinkButton
-            sessionId={sessionId}
-            variant="outline"
-            size="sm"
-            className={cn(
-              "shrink-0",
-              uiMode === "dark"
-                ? "border-white/20 bg-white/5 text-white hover:bg-white/10"
-                : "border-black/20 bg-black/5 text-black hover:bg-black/10"
-            )}
-          />
+          {analytics?.publicCode && analytics?.hostSlug && (
+            <Button
+              onClick={() => setShareSheetOpen(true)}
+              variant="outline"
+              size="sm"
+              className={cn(
+                "shrink-0",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  : "border-black/20 bg-black/5 text-black hover:bg-black/10"
+              )}
+            >
+              <Share2 className="w-4 h-4 mr-2" />
+              Share invite link
+            </Button>
+          )}
         </div>
 
         {/* SECTION 1: Session Status */}
@@ -558,6 +572,29 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
 
       {/* Save Draft Guard Modal */}
       <SaveDraftGuardModal sessionId={sessionId} uiMode={uiMode} sessionStatus={analytics?.sessionStatus} />
+
+      {/* Share Sheet */}
+      {analytics?.publicCode && analytics?.hostSlug && (
+        <PublishShareSheet
+          open={shareSheetOpen}
+          onOpenChange={setShareSheetOpen}
+          publishedUrl={
+            typeof window !== "undefined"
+              ? `${window.location.origin}/${analytics.hostSlug}/${analytics.publicCode}`
+              : ""
+          }
+          hostSlug={analytics.hostSlug}
+          publicCode={analytics.publicCode}
+          sessionId={sessionId}
+          uiMode={uiMode}
+          title="Share invite"
+          description="Share your invite link with your group."
+          hostName={analytics.hostName}
+          sessionStartAt={analytics.startAt}
+          sessionLocation={analytics.location}
+          sessionSport={analytics.sport}
+        />
+      )}
     </div>
   )
 }

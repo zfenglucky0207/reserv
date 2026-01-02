@@ -347,6 +347,10 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       hostSlug: string | null
       publicCode: string | null
       waitlistEnabled: boolean
+      hostName: string | null
+      location: string | null
+      sport: string | null
+      title: string | null
     }
   | { ok: false; error: string }
 > {
@@ -360,7 +364,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
   // Get session with capacity and verify ownership
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id, capacity, status, start_at, host_slug, public_code")
+    .select("id, host_id, capacity, status, start_at, host_slug, public_code, host_name, location, sport, title")
     .eq("id", sessionId)
     .single()
 
@@ -467,6 +471,10 @@ export async function getSessionAnalytics(sessionId: string): Promise<
     hostSlug: session.host_slug as string | null,
     publicCode: session.public_code as string | null,
     waitlistEnabled: (session as any).waitlist_enabled !== false, // Default to true if null/undefined
+    hostName: (session as any).host_name as string | null,
+    location: (session as any).location as string | null,
+    sport: (session as any).sport as string | null,
+    title: (session as any).title as string | null,
   }
 }
 

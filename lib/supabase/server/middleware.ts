@@ -65,54 +65,81 @@ const protectedRoutes = [
 ];
 
 export async function updateSession(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({
-    request,
-  });
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value, options }) =>
-            request.cookies.set(name, value)
-          );
-
-          supabaseResponse = NextResponse.next({
-            request,
-          });
-
-          cookiesToSet.forEach(({ name, value, options }) =>
-            supabaseResponse.cookies.set(name, value, options)
-          );
-        },
-      },
+  try {
+    // Validate environment variables
+    if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+      console.error("[Middleware] Missing Supabase environment variables");
+      return NextResponse.next({ request });
     }
-  );
 
-  // Refresh session to update cookies if needed
-  await supabase.auth.getUser();
+    let supabaseResponse = NextResponse.next({
+      request,
+    });
 
-  for (const route of protectedRoutes) {
-    if (request.nextUrl.pathname.startsWith(route.path)) {
-      const unauthorizedPath = await protectPath(
-        supabase,
-        route.roles,
-        false,
-        route.unauthorizedPath
-      );
-      if (unauthorizedPath) {
-        const redirectUrl = new URL(unauthorizedPath, request.url);
-        const previousPage = request.headers.get("referer") || "/";
-        redirectUrl.searchParams.set("from", previousPage);
-        return NextResponse.redirect(redirectUrl);
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      {
+        cookies: {
+          getAll() {
+            return request.cookies.getAll();
+          },
+          setAll(cookiesToSet) {
+            try {
+              cookiesToSet.forEach(({ name, value, options }) =>
+                request.cookies.set(name, value)
+              );
+
+              supabaseResponse = NextResponse.next({
+                request,
+              });
+
+              cookiesToSet.forEach(({ name, value, options }) =>
+                supabaseResponse.cookies.set(name, value, options)
+              );
+            } catch (error) {
+              console.error("[Middleware] Error setting cookies:", error);
+            }
+          },
+        },
       }
-    }
-  }
+    );
 
-  return supabaseResponse;
+    // Refresh session to update cookies if needed
+    try {
+      await supabase.auth.getUser();
+    } catch (error) {
+      // Silently handle auth errors (user might not be authenticated)
+      console.error("[Middleware] Error refreshing session:", error);
+    }
+
+    // Check protected routes
+    try {
+      for (const route of protectedRoutes) {
+        if (request.nextUrl.pathname.startsWith(route.path)) {
+          const unauthorizedPath = await protectPath(
+            supabase,
+            route.roles,
+            false,
+            route.unauthorizedPath
+          );
+          if (unauthorizedPath) {
+            const redirectUrl = new URL(unauthorizedPath, request.url);
+            const previousPage = request.headers.get("referer") || "/";
+            redirectUrl.searchParams.set("from", previousPage);
+            return NextResponse.redirect(redirectUrl);
+          }
+        }
+      }
+    } catch (error) {
+      console.error("[Middleware] Error checking protected routes:", error);
+      // Continue with the request if route protection fails
+    }
+
+    return supabaseResponse;
+  } catch (error) {
+    console.error("[Middleware] Unexpected error:", error);
+    // Return a response to prevent the middleware from crashing
+    return NextResponse.next({ request });
+  }
 }
