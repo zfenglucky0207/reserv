@@ -4,13 +4,16 @@ import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { SessionInvite } from "@/components/session-invite"
 import { GuestRSVPDialog } from "./guest-rsvp-dialog"
+import { LoginDialog } from "@/components/login-dialog"
 import { joinSession, declineSession, getParticipantRSVPStatus } from "@/app/session/[id]/actions"
 import { useToast } from "@/hooks/use-toast"
 import { format, parseISO } from "date-fns"
 import { ArrowLeft } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { getOrCreateGuestKey, getGuestKey } from "@/lib/guest-key"
+import { useAuth } from "@/lib/hooks/use-auth"
 
 interface Participant {
   id: string
@@ -77,12 +80,17 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
   const router = useRouter()
   const searchParams = useSearchParams()
   const { toast } = useToast()
+  const { isAuthenticated } = useAuth()
   const [rsvpDialogOpen, setRsvpDialogOpen] = useState(false)
   const [rsvpAction, setRsvpAction] = useState<"join" | "decline">("join")
   const [uiMode, setUiMode] = useState<"dark" | "light">("dark")
   const [rsvpState, setRsvpState] = useState<"none" | "joined" | "declined" | "waitlisted">("none")
   const [storedParticipantInfo, setStoredParticipantInfo] = useState<{ name: string; phone: string | null } | null>(null)
   const [guestKey, setGuestKey] = useState<string | null>(null)
+  const [switchConfirmDialogOpen, setSwitchConfirmDialogOpen] = useState(false)
+  const [pendingSwitchAction, setPendingSwitchAction] = useState<"join" | "decline" | null>(null)
+  const [loginDialogOpen, setLoginDialogOpen] = useState(false)
+  const [hasShownLoginDialog, setHasShownLoginDialog] = useState(false)
   
   // Check if user came from analytics page
   const fromAnalytics = searchParams.get("from") === "analytics"
@@ -90,13 +98,21 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
   // Get public_code from session
   const publicCode = (session as any).public_code
 
-  // Initialize guest key on mount
+  // Initialize guest key on mount and show login dialog if needed
   useEffect(() => {
     if (typeof window !== "undefined") {
       const key = getOrCreateGuestKey()
       setGuestKey(key)
+      
+      // Check if we should show login dialog on first visit (if not authenticated)
+      const hasVisitedBefore = localStorage.getItem(`reserv_invite_visited_${publicCode}`)
+      if (!hasVisitedBefore && !isAuthenticated && !hasShownLoginDialog) {
+        setLoginDialogOpen(true)
+        setHasShownLoginDialog(true)
+        localStorage.setItem(`reserv_invite_visited_${publicCode}`, "true")
+      }
     }
-  }, [])
+  }, [publicCode, isAuthenticated, hasShownLoginDialog])
 
   // Load participant RSVP status on mount using guest_key
   useEffect(() => {
@@ -154,7 +170,7 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
   const sportDisplayName = getSportDisplayName(session.sport)
 
   // Convert participants to demo format for SessionInvite
-  const demoParticipants = participants.map((p) => ({
+  const demoParticipants = (participants || []).map((p) => ({
     name: p.display_name,
     avatar: null,
   }))
@@ -173,10 +189,20 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
         return
       }
 
-      // Store participant info in localStorage
+      // Store participant info in localStorage (this sets identity ready)
       const storageKey = `reserv_rsvp_${publicCode}`
       localStorage.setItem(storageKey, JSON.stringify({ name, phone }))
       setStoredParticipantInfo({ name, phone })
+      
+      // If no action specified, this was just identity setup - show success and unlock slider
+      if (!action) {
+        toast({
+          title: "You're set!",
+          description: "Slide to join or decline.",
+          variant: "success",
+        })
+        return
+      }
 
       if (!guestKey) {
         toast({
@@ -243,22 +269,55 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
     }
   }
 
-  // Handle RSVP click - if already RSVP'd, switch action to opposite
+  // Handle RSVP click - if already RSVP'd, show confirmation before switching
   const handleRSVPClick = (action: "join" | "decline") => {
     // If user has already RSVP'd and clicking the same action, do nothing
     if (rsvpState === "joined" && action === "join") return
     if (rsvpState === "declined" && action === "decline") return
+    if (rsvpState === "waitlisted" && action === "join") return // Can't join if already waitlisted (must wait for spot)
 
-    // If user already RSVP'd, use stored info (no need for dialog - directly update)
-    if (storedParticipantInfo && rsvpState !== "none") {
+    // If user already RSVP'd and trying to switch, show confirmation dialog
+    if (
+      storedParticipantInfo &&
+      ((rsvpState === "joined" && action === "decline") ||
+       (rsvpState === "declined" && action === "join") ||
+       (rsvpState === "waitlisted" && action === "decline"))
+    ) {
+      // Switching states - show confirmation
+      setPendingSwitchAction(action)
+      setSwitchConfirmDialogOpen(true)
+      return
+    }
+
+    // User has identity - directly execute action
+    if (storedParticipantInfo) {
       handleRSVPContinue(storedParticipantInfo.name, storedParticipantInfo.phone, action)
       return
     }
 
-    // First time RSVP - show dialog
+    // First time RSVP - show name dialog
     setRsvpAction(action)
     setRsvpDialogOpen(true)
   }
+
+  // Handle confirmed switch after dialog
+  const handleConfirmSwitch = () => {
+    if (pendingSwitchAction && storedParticipantInfo) {
+      setSwitchConfirmDialogOpen(false)
+      handleRSVPContinue(storedParticipantInfo.name, storedParticipantInfo.phone, pendingSwitchAction)
+      setPendingSwitchAction(null)
+    }
+  }
+
+  // Handle identity required (called when slider is tapped but user has no identity)
+  const handleIdentityRequired = () => {
+    // Open modal without a specific action (just for identity)
+    setRsvpAction("join") // Default to join, but user can change after
+    setRsvpDialogOpen(true)
+  }
+  
+  // Check if identity is ready (user has entered name or already has participant record)
+  const identityReady = storedParticipantInfo !== null || rsvpState !== "none"
 
   const handleBackToAnalytics = () => {
     router.push(`/host/sessions/${session.id}/edit`)
@@ -290,7 +349,7 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
         initialCoverUrl={session.cover_url}
         initialSport={sportDisplayName}
         initialEditMode={false}
-        initialPreviewMode={true}
+        initialPreviewMode={false}
         hidePreviewBanner={true} // Hide preview banner for public view
         initialTitle={session.title}
         initialDate={formattedDate}
@@ -307,6 +366,23 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
         onDeclineClick={() => handleRSVPClick("decline")}
         rsvpState={rsvpState}
         waitlist={waitlist}
+        identityReady={identityReady}
+        onIdentityRequired={handleIdentityRequired}
+      />
+
+      {/* Login Dialog - shown on first visit if not authenticated */}
+      <LoginDialog
+        open={loginDialogOpen}
+        onOpenChange={setLoginDialogOpen}
+        onContinueAsGuest={(name) => {
+          // Store guest name for future use
+          if (typeof window !== "undefined") {
+            const storageKey = `reserv_rsvp_${publicCode}`
+            localStorage.setItem(storageKey, JSON.stringify({ name, phone: null }))
+            setStoredParticipantInfo({ name, phone: null })
+          }
+          setLoginDialogOpen(false)
+        }}
       />
 
       {/* RSVP Dialog */}
@@ -317,6 +393,59 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostAv
         uiMode={uiMode}
         action={rsvpAction}
       />
+
+      {/* Switch Confirmation Dialog */}
+      <Dialog open={switchConfirmDialogOpen} onOpenChange={setSwitchConfirmDialogOpen}>
+        <DialogContent
+          className={cn(
+            uiMode === "dark" ? "bg-slate-900 border-white/10 text-white" : "bg-white border-black/10 text-black"
+          )}
+        >
+          <DialogHeader>
+            <DialogTitle>
+              {pendingSwitchAction === "decline"
+                ? "Change to Decline?"
+                : pendingSwitchAction === "join"
+                ? "Join this session?"
+                : "Change your response?"}
+            </DialogTitle>
+            <DialogDescription
+              className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}
+            >
+              {pendingSwitchAction === "decline"
+                ? "You can join again anytime before the session closes."
+                : pendingSwitchAction === "join"
+                ? "Your spot will be reserved if there's space."
+                : "Are you sure you want to change your response?"}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-3 mt-4">
+            <Button
+              onClick={() => setSwitchConfirmDialogOpen(false)}
+              variant="outline"
+              className={cn(
+                "flex-1 rounded-full h-12",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                  : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
+              )}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmSwitch}
+              className={cn(
+                "flex-1 rounded-full h-12 font-medium shadow-lg",
+                pendingSwitchAction === "decline"
+                  ? "bg-gradient-to-r from-red-400 to-red-600 hover:from-red-500 hover:to-red-700 text-white shadow-red-500/20"
+                  : "bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black shadow-lime-500/20"
+              )}
+            >
+              {pendingSwitchAction === "decline" ? "Decline" : "Join"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }

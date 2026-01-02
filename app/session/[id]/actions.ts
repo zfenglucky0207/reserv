@@ -103,7 +103,8 @@ export async function joinSession(
         display_name: trimmedName,
         contact_phone: trimmedPhone,
       })
-      .eq("id", existingParticipant.id)
+      .eq("session_id", session.id)
+      .eq("guest_key", guestKey)
 
     if (updateError) {
       return { ok: false, error: updateError.message }
@@ -252,7 +253,8 @@ export async function declineSession(
         display_name: trimmedName,
         contact_phone: trimmedPhone,
       })
-      .eq("id", existingParticipant.id)
+      .eq("session_id", session.id)
+      .eq("guest_key", guestKey)
 
     if (updateError) {
       return { ok: false, error: updateError.message }

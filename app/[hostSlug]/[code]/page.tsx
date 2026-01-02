@@ -192,7 +192,17 @@ async function PublicInviteContent({
     .order("created_at", { ascending: true })
 
   if (participantsError) {
-    console.error(`[PublicInvitePage] Error fetching participants:`, participantsError)
+    console.error(`[PublicInvitePage] Error fetching participants:`, {
+      error: participantsError,
+      code: participantsError.code,
+      message: participantsError.message,
+      details: participantsError.details,
+      hint: participantsError.hint,
+      sessionId: session.id,
+      sessionStatus: session.status,
+    })
+  } else {
+    console.log(`[PublicInvitePage] Fetched ${participants?.length || 0} participants for session ${session.id}`)
   }
 
   // Fetch host profile for avatar

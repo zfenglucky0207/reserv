@@ -49,3 +49,4 @@ CREATE POLICY "avatars_select_public"
   TO public
   USING (bucket_id = 'avatars');
 
+

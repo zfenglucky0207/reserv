@@ -42,3 +42,4 @@ CREATE POLICY "profiles_select_public_for_invites"
 -- Add comment
 COMMENT ON TABLE public.profiles IS 'Host profile information including avatar and display name';
 
+

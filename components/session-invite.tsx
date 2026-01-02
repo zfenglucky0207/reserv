@@ -126,6 +126,8 @@ interface SessionInviteProps {
   initialSessionStatus?: "draft" | "open" | "closed" | "completed" | "cancelled" // Session status for draft update logic
   rsvpState?: "none" | "joined" | "declined" | "waitlisted" // Current RSVP state for public view
   waitlist?: Array<{ id: string; display_name: string }> // Waitlist participants for public view
+  identityReady?: boolean // Whether user has identity (name entered)
+  onIdentityRequired?: () => void // Callback to open identity modal
 }
 
 export function SessionInvite({
@@ -153,6 +155,8 @@ export function SessionInvite({
   initialSessionStatus,
   rsvpState = "none",
   waitlist = [],
+  identityReady = true,
+  onIdentityRequired,
 }: SessionInviteProps) {
   console.log(`[SessionInvite] Render:`, { sessionId, initialCoverUrl, initialSport, initialEditMode, initialPreviewMode })
   
@@ -2194,8 +2198,14 @@ export function SessionInvite({
                       if (sessionId && sessionId !== "new" && sessionId !== "edit") {
                         try {
                           const { updateSessionContainerOverlay } = await import("@/app/host/sessions/[id]/actions")
-                          await updateSessionContainerOverlay(sessionId, newValue)
-                          router.refresh() // Refresh to sync with server state
+                          const result = await updateSessionContainerOverlay(sessionId, newValue)
+                          if (!result.ok) {
+                            console.error("[ContainerOverlayToggle] Error saving preference:", result.error)
+                            // Revert on error
+                            setContainerOverlayEnabled(!newValue)
+                          } else {
+                            router.refresh() // Refresh to sync with server state
+                          }
                         } catch (error) {
                           console.error("[ContainerOverlayToggle] Error saving preference:", error)
                           // Revert on error
@@ -2692,7 +2702,7 @@ export function SessionInvite({
                   </Badge>
                 </div>
                 {demoParticipants.length === 0 ? (
-                  <p className={`text-sm ${mutedText} px-1`}>No one has joined so far.</p>
+                  <p className={`text-sm ${mutedText} px-1`}>No one has joined yet.</p>
                 ) : (
                   <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
                     {demoParticipants.map((participant, i) => {
@@ -3568,17 +3578,19 @@ export function SessionInvite({
                 state={rsvpState}
                 onAccept={async () => {
                   if (onJoinClick) {
-                    onJoinClick()
+                    await onJoinClick()
                   }
                 }}
                 onDecline={async () => {
                   if (onDeclineClick) {
-                    onDeclineClick()
+                    await onDeclineClick()
                   }
                 }}
                 disabled={false}
                 uiMode={uiMode}
                 isPreviewMode={isPreviewMode}
+                identityReady={identityReady}
+                onIdentityRequired={onIdentityRequired}
               />
             </div>
           </div>

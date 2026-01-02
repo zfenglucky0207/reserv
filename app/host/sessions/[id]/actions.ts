@@ -111,12 +111,15 @@ export async function updateSessionHostName(sessionId: string, hostName: string 
 /**
  * Update session container overlay enabled preference
  */
-export async function updateSessionContainerOverlay(sessionId: string, enabled: boolean) {
+export async function updateSessionContainerOverlay(
+  sessionId: string,
+  enabled: boolean
+): Promise<{ ok: true; data: any } | { ok: false; error: string }> {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
 
   if (!userId) {
-    throw new Error("Unauthorized")
+    return { ok: false, error: "Unauthorized" }
   }
 
   // Verify session belongs to user
@@ -127,11 +130,11 @@ export async function updateSessionContainerOverlay(sessionId: string, enabled: 
     .single()
 
   if (fetchError || !session) {
-    throw new Error("Session not found")
+    return { ok: false, error: "Session not found" }
   }
 
   if (session.host_id !== userId) {
-    throw new Error("Unauthorized: You don't own this session")
+    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Update session container overlay preference
@@ -150,16 +153,16 @@ export async function updateSessionContainerOverlay(sessionId: string, enabled: 
     if (error.message.includes("container_overlay_enabled") && error.message.includes("schema cache")) {
       console.warn("[updateSessionContainerOverlay] Column not found. Please run migration: 20250110000000_add_container_overlay_enabled_to_sessions.sql")
       // Return success anyway - the toggle will work locally, just won't persist until migration is run
-      return { data: null }
+      return { ok: true, data: null }
     }
-    throw new Error(`Failed to update container overlay preference: ${error.message}`)
+    return { ok: false, error: `Failed to update container overlay preference: ${error.message}` }
   }
 
   // Revalidate paths
   revalidatePath(`/host/sessions/${sessionId}/edit`)
   revalidatePath(`/s/${sessionId}`)
 
-  return { data }
+  return { ok: true, data }
 }
 
 /**

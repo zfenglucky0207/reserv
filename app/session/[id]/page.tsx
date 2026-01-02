@@ -177,7 +177,17 @@ async function PublicSessionContent({ sessionId }: { sessionId: string }) {
     .order("created_at", { ascending: true })
 
   if (participantsError) {
-    console.error(`[PublicSessionPage] Error fetching participants:`, participantsError)
+    console.error(`[PublicSessionPage] Error fetching participants:`, {
+      error: participantsError,
+      code: participantsError.code,
+      message: participantsError.message,
+      details: participantsError.details,
+      hint: participantsError.hint,
+      sessionId,
+      sessionStatus: session.status,
+    })
+  } else {
+    console.log(`[PublicSessionPage] Fetched ${participants?.length || 0} participants for session ${sessionId}`)
   }
 
   // Separate confirmed and waitlisted

@@ -14,6 +14,8 @@ interface SwipeRSVPControlProps {
   disabled?: boolean
   uiMode: "dark" | "light"
   isPreviewMode?: boolean
+  identityReady?: boolean // Whether user has identity (name entered)
+  onIdentityRequired?: () => void // Callback to open identity modal
 }
 
 const THUMB_SIZE = 44
@@ -27,6 +29,8 @@ export function SwipeRSVPControl({
   disabled = false,
   uiMode,
   isPreviewMode = false,
+  identityReady = true, // Default to true for backward compatibility
+  onIdentityRequired,
 }: SwipeRSVPControlProps) {
   const trackRef = useRef<HTMLDivElement>(null)
   const knobRef = useRef<HTMLDivElement>(null)
@@ -71,7 +75,13 @@ export function SwipeRSVPControl({
       return
     }
 
-    console.log("[SwipeRSVPControl] Pointer DOWN", { type: e.pointerType, button: e.button })
+    // Check if identity is required BEFORE allowing drag
+    if (!identityReady && onIdentityRequired && !isPreviewMode) {
+      e.preventDefault()
+      e.stopPropagation()
+      onIdentityRequired()
+      return
+    }
 
     e.preventDefault()
     e.stopPropagation()
@@ -95,7 +105,7 @@ export function SwipeRSVPControl({
         target.setPointerCapture(pointerId)
       }
     } catch (err) {
-      console.warn("[SwipeRSVPControl] Failed to capture pointer:", err)
+      // Ignore pointer capture errors (can fail in some edge cases)
     }
 
     const startX = e.clientX
@@ -103,7 +113,6 @@ export function SwipeRSVPControl({
 
     const handleMove = (moveEvent: PointerEvent) => {
       if (!isDraggingRef.current) {
-        console.log("[SwipeRSVPControl] Move ignored - not dragging")
         return
       }
       if (moveEvent.pointerId !== pointerId) return
@@ -140,8 +149,8 @@ export function SwipeRSVPControl({
       const threshold = centerOffset * THRESHOLD_PERCENT
       const currentX = x.get()
 
-      // Determine if threshold was crossed (but don't commit in preview mode)
-      if (!isPreviewMode) {
+      // Determine if threshold was crossed (but don't commit in preview mode or without identity)
+      if (!isPreviewMode && identityReady) {
         if (currentX < -threshold && canAccept) {
           commitAction("accept")
         } else if (currentX > threshold && canDecline) {
@@ -151,7 +160,7 @@ export function SwipeRSVPControl({
           x.set(0)
         }
       } else {
-        // In preview mode, just snap back to center without committing
+        // In preview mode or without identity, just snap back to center without committing
         x.set(0)
       }
 
@@ -169,7 +178,9 @@ export function SwipeRSVPControl({
   }
 
   const commitAction = async (action: "accept" | "decline") => {
-    if (isPending) return
+    if (isPending || !identityReady) {
+      return
+    }
 
     setIsPending(true)
     setCommittedAction(action)
@@ -189,14 +200,14 @@ export function SwipeRSVPControl({
         await onDecline()
       }
     } catch (error) {
-      console.error("[SwipeRSVPControl] Action failed:", error)
+      console.error(`[RSVP_SLIDER] ${action} action failed:`, error)
+      // On error, snap back to center
+      x.set(0)
     } finally {
       setIsPending(false)
       setCommittedAction(null)
-      // Reset to center after a brief delay
-      setTimeout(() => {
-        x.set(0)
-      }, 500)
+      // Only reset to center if action failed (on success, UI state will change)
+      // The state change will trigger a reset via useEffect
     }
   }
 
