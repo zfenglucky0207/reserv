@@ -690,7 +690,12 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostSl
 
   // Handle payment dialog continue - set paying for participant and scroll
   const handlePaymentContinue = () => {
+    const traceId = newTraceId("pay")
+    
     if (!selectedParticipantId) {
+      logError("payment_user_selection_missing", withTrace({
+        stage: "validation",
+      }, traceId))
       toast({
         title: "Error",
         description: "Please select a participant to pay for.",
