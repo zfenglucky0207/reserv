@@ -1833,11 +1833,8 @@ export function SessionInvite({
         if (typeof window !== "undefined") {
           sessionStorage.setItem("pending_publish", "true")
           // Capture current URL for redirect after login
-          const { getCurrentUrl, setReturnTo } = await import("@/lib/return-to")
-          const { getCurrentReturnTo, setPostAuthRedirect } = await import("@/lib/post-auth-redirect")
-          const returnTo = getCurrentUrl()
-          setReturnTo(returnTo)
-          // Also set post-auth redirect for compatibility
+          const returnTo = getCurrentReturnTo()
+          // Set post-auth redirect
           setPostAuthRedirect(returnTo)
           console.log("[auth] setReturnTo from publish", { url: returnTo })
         }
@@ -2190,11 +2187,8 @@ export function SessionInvite({
         
         sessionStorage.setItem("pending_save_draft", "true")
         // Capture current URL for redirect after login
-        const { getCurrentUrl, setReturnTo } = await import("@/lib/return-to")
-        const { getCurrentReturnTo, setPostAuthRedirect } = await import("@/lib/post-auth-redirect")
-        const returnTo = getCurrentUrl()
-        setReturnTo(returnTo)
-        // Also set post-auth redirect for compatibility
+        const returnTo = getCurrentReturnTo()
+        // Set post-auth redirect
         setPostAuthRedirect(returnTo)
         console.log("[auth] setReturnTo from save draft", { url: returnTo })
       }
