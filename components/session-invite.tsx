@@ -232,12 +232,8 @@ function SwipeToJoinSlider({
         onJoin()
       }, 150)
 
-      // Reset UI after (parent should flip isJoined true if join succeeded)
-      setTimeout(() => {
-        setIsCompleted(false)
-        animate(x, 0, { type: "tween", duration: 0.22, ease: [0.16, 1, 0.3, 1] })
-      }, 650)
-
+      // DO NOT reset - wait for parent to set isJoined=true, which will lock the slider
+      // The slider will stay at maxX until isJoined prop changes
       return
     }
 
@@ -267,13 +263,18 @@ function SwipeToJoinSlider({
     })
   }, [disabled, isPreviewMode, isJoined])
 
-  // If it becomes disabled/joined, reset slider
+  // If joined, lock slider at the end position permanently
   useEffect(() => {
-    if (disabled || isJoined || isPreviewMode) {
+    if (isJoined) {
+      setIsCompleted(true)
+      // Animate to end and lock it there (don't reset)
+      animate(x, maxX, { type: "tween", duration: 0.2, ease: [0.16, 1, 0.3, 1] })
+    } else if (disabled || isPreviewMode) {
+      // Only reset if disabled/preview (not if joined)
       setIsCompleted(false)
       animate(x, 0, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
     }
-  }, [disabled, isJoined, isPreviewMode, x])
+  }, [disabled, isJoined, isPreviewMode, x, maxX])
 
   return (
     <div
@@ -3867,7 +3868,7 @@ export function SessionInvite({
                     uiMode={uiMode}
                     isPreviewMode={isPreviewMode}
                     label="Join session"
-                    isJoined={false}
+                    isJoined={String(rsvpState) === "joined"}
                   />
                   {actualSessionId && !demoMode && (
                     <Button

@@ -9,8 +9,30 @@ export async function POST(req: Request) {
   const traceId = req.headers.get("x-trace-id") ?? `join_${Date.now()}`
   const startedAt = Date.now()
 
+  // Ensure we always return JSON, never HTML
+  const jsonResponse = (data: any, status: number = 200) => {
+    return NextResponse.json(data, {
+      status,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    })
+  }
+
   try {
-    const body = await req.json()
+    let body
+    try {
+      body = await req.json()
+    } catch (parseError: any) {
+      log("error", "join_request_parse_failed", {
+        traceId,
+        error: parseError?.message,
+      })
+      return jsonResponse(
+        { error: "Invalid request body", traceId },
+        400
+      )
+    }
     const { publicCode, name, phone, guestKey } = body ?? {}
 
     log("info", "join_request", {
@@ -23,43 +45,97 @@ export async function POST(req: Request) {
 
     if (!publicCode || typeof publicCode !== "string") {
       log("warn", "join_bad_request", { traceId, reason: "missing_publicCode" })
-      return NextResponse.json(
+      return jsonResponse(
         { error: "Missing invite code", traceId },
-        { status: 400 }
+        400
       )
     }
 
     if (!name || typeof name !== "string" || !name.trim()) {
       log("warn", "join_bad_request", { traceId, reason: "missing_name" })
-      return NextResponse.json(
+      return jsonResponse(
         { error: "Name is required", traceId },
-        { status: 400 }
+        400
       )
     }
 
-    // Use admin client for inserts to bypass RLS (trusted server-side operation)
-    // We still validate session access using the regular client
-    const supabase = await createClient()
-    
-    // Verify service role key exists (critical for production)
+    // Verify required environment variables first
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
     const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (!serviceRoleKey) {
-      log("error", "join_missing_service_role_key", {
+    
+    if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
+      log("error", "join_missing_env_vars", {
         traceId,
-        hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
-        hasAnonKey: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+        hasUrl: !!supabaseUrl,
+        hasAnonKey: !!supabaseAnonKey,
+        hasServiceRoleKey: !!serviceRoleKey,
       })
       return NextResponse.json(
         { 
           error: "Server configuration error", 
-          detail: "Service role key is missing. Please check environment variables.",
+          detail: "Missing required Supabase environment variables. Please check Vercel environment variables.",
           traceId 
         },
-        { status: 500 }
+        { 
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
       )
     }
     
-    const adminSupabase = createAdminClient()
+    // Use admin client for inserts to bypass RLS (trusted server-side operation)
+    // We still validate session access using the regular client
+    let supabase
+    let adminSupabase
+    
+    try {
+      supabase = await createClient()
+    } catch (clientError: any) {
+      log("error", "join_supabase_client_creation_failed", {
+        traceId,
+        error: clientError?.message,
+        stack: clientError?.stack,
+      })
+      return NextResponse.json(
+        { 
+          error: "Server configuration error", 
+          detail: "Failed to create Supabase client.",
+          traceId 
+        },
+        { 
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
+      )
+    }
+    
+    try {
+      adminSupabase = createAdminClient()
+    } catch (adminError: any) {
+      log("error", "join_admin_client_creation_failed", {
+        traceId,
+        error: adminError?.message,
+        stack: adminError?.stack,
+      })
+      return NextResponse.json(
+        { 
+          error: "Server configuration error", 
+          detail: "Failed to create admin client.",
+          traceId 
+        },
+        { 
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+          }
+        }
+      )
+    }
 
     // Log Supabase configuration (host only, not full keys) for debugging
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
@@ -443,15 +519,27 @@ export async function POST(req: Request) {
       participantId,
     })
 
-    return NextResponse.json(
+    return jsonResponse(
       { ok: true, traceId, participantId },
-      { status: 200 }
+      200
     )
   } catch (e: any) {
-    log("error", "join_unhandled", { traceId, message: e?.message, stack: e?.stack })
-    return NextResponse.json(
-      { error: "Internal error", traceId },
-      { status: 500 }
+    log("error", "join_unhandled", { 
+      traceId, 
+      message: e?.message, 
+      stack: e?.stack,
+      name: e?.name,
+      cause: e?.cause,
+    })
+    
+    // Always return JSON, never HTML
+    return jsonResponse(
+      { 
+        error: "Internal error", 
+        detail: e?.message || "An unexpected error occurred",
+        traceId 
+      },
+      500
     )
   }
 }

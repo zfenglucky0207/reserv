@@ -253,16 +253,45 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostSl
 
       // Parse response with better error handling
       let json: any = null
+      let responseText: string = ""
       try {
-        const text = await res.text()
-        json = text ? JSON.parse(text) : null
+        responseText = await res.text()
+        // Check if response is HTML (error page)
+        if (responseText.trim().startsWith("<!DOCTYPE") || responseText.trim().startsWith("<html")) {
+          log("error", "join_response_is_html", { 
+            traceId, 
+            status: res.status,
+            contentType: res.headers.get("content-type"),
+            responsePreview: responseText.substring(0, 200),
+          })
+          // Try to extract error from HTML or show generic message
+          toast({
+            title: "Server error",
+            description: "The server returned an error page. Please try again or contact support.",
+            variant: "destructive",
+          })
+          return
+        }
+        json = responseText ? JSON.parse(responseText) : null
       } catch (e) {
         log("error", "join_response_parse_error", { 
           traceId, 
           status: res.status, 
-          error: String(e)
+          error: String(e),
+          responsePreview: responseText.substring(0, 200),
+          contentType: res.headers.get("content-type"),
         })
         json = null
+        
+        // If we can't parse JSON and it's not HTML, show error
+        if (!responseText.trim().startsWith("<!DOCTYPE")) {
+          toast({
+            title: "Invalid response",
+            description: "The server returned an unexpected response. Please try again.",
+            variant: "destructive",
+          })
+          return
+        }
       }
       
       log("info", "join_response", { 
