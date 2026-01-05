@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -12,7 +12,8 @@ interface GuestRSVPDialogProps {
   onOpenChange: (open: boolean) => void
   onContinue: (name: string, phone: string | null) => void
   uiMode: "dark" | "light"
-  action: "join" | "decline"
+  action: "join"
+  initialName?: string
 }
 
 export function GuestRSVPDialog({
@@ -21,10 +22,18 @@ export function GuestRSVPDialog({
   onContinue,
   uiMode,
   action,
+  initialName = "",
 }: GuestRSVPDialogProps) {
-  const [name, setName] = useState("")
+  const [name, setName] = useState(initialName)
   const [phone, setPhone] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
+
+  // Update name when initialName changes (e.g., when dialog opens with pre-filled name)
+  useEffect(() => {
+    if (open && initialName) {
+      setName(initialName)
+    }
+  }, [open, initialName])
 
   const handleSubmit = async () => {
     if (!name.trim()) {
@@ -58,7 +67,7 @@ export function GuestRSVPDialog({
           <DialogTitle
             className={cn("text-2xl font-bold", uiMode === "dark" ? "text-white" : "text-black")}
           >
-            {action === "join" ? "Join Session" : "Decline Session"}
+            Join Session
           </DialogTitle>
           <DialogDescription
             className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}
@@ -128,7 +137,7 @@ export function GuestRSVPDialog({
             disabled={!name.trim() || isSubmitting}
             className="bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full"
           >
-            {action === "join" ? "Join" : "Decline"}
+            Join
           </Button>
         </div>
       </DialogContent>

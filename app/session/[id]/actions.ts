@@ -10,7 +10,7 @@ import { revalidatePath } from "next/cache"
 export async function getParticipantRSVPStatus(
   publicCode: string,
   guestKey: string | null
-): Promise<{ ok: true; status: "confirmed" | "cancelled" | "waitlisted" | null; displayName?: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; status: "confirmed" | "cancelled" | "waitlisted" | null; displayName?: string; participantId?: string } | { ok: false; error: string }> {
   const supabase = await createClient()
 
   // Lookup session by public_code
@@ -33,7 +33,7 @@ export async function getParticipantRSVPStatus(
   // Find existing participant by guest_key
   const { data: participant, error } = await supabase
     .from("participants")
-    .select("status, display_name")
+    .select("id, status, display_name")
     .eq("session_id", session.id)
     .eq("guest_key", guestKey)
     .single()
@@ -48,11 +48,11 @@ export async function getParticipantRSVPStatus(
 
   // Map status to our return type
   if (participant.status === "confirmed") {
-    return { ok: true, status: "confirmed", displayName: participant.display_name }
+    return { ok: true, status: "confirmed", displayName: participant.display_name, participantId: participant.id }
   } else if (participant.status === "cancelled") {
-    return { ok: true, status: "cancelled", displayName: participant.display_name }
+    return { ok: true, status: "cancelled", displayName: participant.display_name, participantId: participant.id }
   } else if (participant.status === "waitlisted") {
-    return { ok: true, status: "waitlisted", displayName: participant.display_name }
+    return { ok: true, status: "waitlisted", displayName: participant.display_name, participantId: participant.id }
   }
 
   return { ok: true, status: null }
@@ -72,16 +72,63 @@ export async function joinSession(
   const supabase = await createClient()
 
   // Lookup session by public_code
+  // Note: RLS policy `public_select_open_sessions` filters by status='open' automatically
+  // We query without explicit status filter to let RLS handle it (matches page.tsx pattern)
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, capacity, status, host_slug, waitlist_enabled")
+    .select("id, capacity, status, host_slug, waitlist_enabled, public_code")
     .eq("public_code", publicCode)
-    .eq("status", "open")
     .single()
 
-  if (sessionError || !session) {
+  if (sessionError) {
+    console.error("[joinSession] Error fetching session:", {
+      publicCode,
+      error: sessionError.message,
+      code: sessionError.code,
+      details: sessionError.details,
+      hint: sessionError.hint,
+    })
+    
+    // If it's a permission/RLS error (PostgreSQL error code 42501 = insufficient_privilege)
+    if (sessionError.code === "42501" || sessionError.message?.includes("permission") || sessionError.message?.includes("policy") || sessionError.message?.includes("row-level security")) {
+      console.error("[joinSession] RLS policy may be blocking access. Check public_select_open_sessions policy.")
+      return { 
+        ok: false, 
+        error: "Access denied. Please check that the session is published and open.", 
+        code: "SESSION_NOT_FOUND" 
+      }
+    }
+    
+    // If it's "not found" (PGRST116), the session might not exist or RLS filtered it out
+    if (sessionError.code === "PGRST116") {
+      console.error("[joinSession] Session not found - may be filtered by RLS or doesn't exist:", { publicCode })
+      return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
+    }
+    
     return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
   }
+
+  if (!session) {
+    console.error("[joinSession] Session not found (no data returned):", { publicCode })
+    return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
+  }
+
+  // Verify status (RLS should have filtered, but double-check)
+  if (session.status !== "open") {
+    console.error("[joinSession] Session found but status is not 'open':", { 
+      publicCode, 
+      sessionId: session.id, 
+      status: session.status 
+    })
+    return { 
+      ok: false, 
+      error: `Session is ${session.status}. Only open sessions can be joined.`, 
+      code: "SESSION_NOT_FOUND" 
+    }
+  }
+
+  // Session found and is open
+  console.log("[joinSession] Session found and verified:", { sessionId: session.id, status: session.status })
 
   const trimmedName = name.trim()
   const trimmedPhone = phone?.trim() || null
@@ -343,12 +390,66 @@ export async function getSessionParticipants(publicCode: string): Promise<
 }
 
 /**
+ * Get unpaid participants for a session (confirmed participants without approved payment)
+ */
+export async function getUnpaidParticipants(
+  publicCode: string
+): Promise<{ ok: true; participants: Array<{ id: string; display_name: string }> } | { ok: false; error: string }> {
+  const supabase = await createClient()
+
+  // First get session ID from public_code
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id")
+    .eq("public_code", publicCode)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  // Get all confirmed participants
+  const { data: participants, error: participantsError } = await supabase
+    .from("participants")
+    .select("id, display_name")
+    .eq("session_id", session.id)
+    .eq("status", "confirmed")
+    .order("created_at", { ascending: true })
+
+  if (participantsError) {
+    return { ok: false, error: participantsError.message }
+  }
+
+  if (!participants || participants.length === 0) {
+    return { ok: true, participants: [] }
+  }
+
+  // Get all approved payment proofs for this session
+  const { data: paymentProofs, error: paymentError } = await supabase
+    .from("payment_proofs")
+    .select("participant_id")
+    .eq("session_id", session.id)
+    .eq("payment_status", "approved")
+
+  if (paymentError) {
+    // If we can't check payment status, return all participants (safer default)
+    return { ok: true, participants: participants }
+  }
+
+  // Filter out participants who have approved payment
+  const paidParticipantIds = new Set(paymentProofs?.map(p => p.participant_id) || [])
+  const unpaidParticipants = participants.filter(p => !paidParticipantIds.has(p.id))
+
+  return { ok: true, participants: unpaidParticipants }
+}
+
+/**
  * Submit payment proof for a session participant
  * Uploads file to Supabase Storage and creates payment_proofs record
  */
 export async function submitPaymentProof(
   sessionId: string,
-  guestKey: string,
+  participantId: string, // Changed: now accepts participantId directly
   fileData: string, // Base64 encoded image data
   fileName: string
 ): Promise<{ ok: true; paymentProofId: string } | { ok: false; error: string }> {
@@ -366,12 +467,12 @@ export async function submitPaymentProof(
     return { ok: false, error: "Session not found or not available" }
   }
 
-  // Find participant by session_id and guest_key
+  // Verify participant exists and is confirmed
   const { data: participant, error: participantError } = await supabase
     .from("participants")
-    .select("id")
+    .select("id, status")
+    .eq("id", participantId)
     .eq("session_id", sessionId)
-    .eq("guest_key", guestKey)
     .eq("status", "confirmed") // Only allow payment if they're confirmed/joined
     .single()
 
@@ -391,7 +492,7 @@ export async function submitPaymentProof(
     const fileExt = fileName.split(".").pop() || "jpg"
     // Normalize file extension for content type
     const normalizedExt = fileExt.toLowerCase() === "jpg" || fileExt.toLowerCase() === "jpeg" ? "jpeg" : fileExt.toLowerCase()
-    const filePath = `payment-proofs/${sessionId}/${participant.id}/${Date.now()}.${fileExt}`
+    const filePath = `payment-proofs/${sessionId}/${participantId}/${Date.now()}.${fileExt}`
 
     // Use admin client for storage upload (bypasses RLS, but we've already validated participant on server)
     const adminClient = createAdminClient()
@@ -435,7 +536,7 @@ export async function submitPaymentProof(
       .from("payment_proofs")
       .insert({
         session_id: sessionId,
-        participant_id: participant.id,
+        participant_id: participantId,
         proof_image_url: publicUrl,
         payment_status: "pending_review",
         ocr_status: "pending",

@@ -39,7 +39,7 @@ export async function generateMetadata({
 }: {
   params: Promise<{ hostSlug: string; code: string }>
 }): Promise<Metadata> {
-  const { code } = await params
+  const { hostSlug, code } = await params
   const supabase = await createClient()
 
   // Fetch session for metadata
@@ -153,22 +153,28 @@ async function PublicInviteContent({
     redirect(`/${currentHostSlug}/${code}`)
   }
 
-  // Fetch participants (only "confirmed" status for public view)
-  const { data: participants, error: participantsError } = await supabase
+  // Fetch participants (both "confirmed" and "waitlisted" status for public view)
+  const { data: allParticipants, error: participantsError } = await supabase
     .from("participants")
-    .select("id, display_name")
+    .select("id, display_name, status")
     .eq("session_id", session.id)
-    .eq("status", "confirmed")
+    .in("status", ["confirmed", "waitlisted"])
     .order("created_at", { ascending: true })
 
   if (participantsError) {
     console.error(`[PublicInvitePage] Error fetching participants:`, participantsError)
   }
 
+  // Separate confirmed and waitlisted participants
+  const confirmedParticipants = (allParticipants || []).filter(p => p.status === "confirmed")
+  const waitlistParticipants = (allParticipants || []).filter(p => p.status === "waitlisted")
+
   return (
     <PublicSessionView
       session={session}
-      participants={participants || []}
+      participants={confirmedParticipants}
+      waitlist={waitlistParticipants}
+      hostSlug={currentHostSlug}
     />
   )
 }

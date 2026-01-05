@@ -2,8 +2,8 @@
 
 import * as React from "react"
 import { cn } from "@/lib/utils"
-import { useState, useEffect, useRef } from "react"
-import { motion, AnimatePresence, LayoutGroup } from "framer-motion"
+import { useState, useEffect, useLayoutEffect, useRef } from "react"
+import { motion, AnimatePresence, LayoutGroup, useMotionValue, useTransform, animate } from "framer-motion"
 import { useRouter, usePathname, useSearchParams } from "next/navigation"
 import { useAuth } from "@/lib/hooks/use-auth"
 import { TopNav } from "./top-nav"
@@ -119,11 +119,235 @@ interface SessionInviteProps {
   demoParticipants?: DemoParticipant[]
   hidePreviewBanner?: boolean // New prop to hide preview banner for public view
   onJoinClick?: () => void // RSVP handler for public view
-  onDeclineClick?: () => void // RSVP handler for public view
   initialIsPublished?: boolean // New prop to indicate if session is published
   initialSessionStatus?: "draft" | "open" | "closed" | "completed" | "cancelled" // Session status for draft update logic
-  rsvpState?: "none" | "joined" | "declined" | "waitlisted" // Current RSVP state for public view
+  rsvpState?: "none" | "joined" | "waitlisted" // Current RSVP state for public view
   waitlist?: Array<{ id: string; display_name: string }> // Waitlist participants for public view
+  publicCode?: string // Public code for sharing (available on public invite page)
+  hostSlug?: string | null // Host slug for sharing (available on public invite page)
+  hasStarted?: boolean // Whether the session has started (for payment flow)
+  onMakePaymentClick?: () => void // Handler for make payment button
+  payingForParticipantId?: string | null // ID of participant being paid for
+  payingForParticipantName?: string | null // Name of participant being paid for
+}
+
+// Swipe to Join Slider Component (iPhone-style)
+const DEBUG_SWIPE = false // Set to true for debugging console logs
+
+function SwipeToJoinSlider({
+  onJoin,
+  disabled = false,
+  uiMode,
+  isPreviewMode = false,
+  label = "Join session",
+  isJoined = false,
+}: {
+  onJoin: () => void
+  disabled?: boolean
+  uiMode: "dark" | "light"
+  isPreviewMode?: boolean
+  label?: string
+  isJoined?: boolean
+}) {
+  const sliderRef = useRef<HTMLDivElement>(null)
+
+  const HANDLE_W = 56
+  const threshold = 0.85
+
+  const [isDragging, setIsDragging] = useState(false)
+  const [isCompleted, setIsCompleted] = useState(false)
+  const [maxX, setMaxX] = useState(0)
+
+  const x = useMotionValue(0)
+
+  // Measure width and keep maxX updated
+  useLayoutEffect(() => {
+    if (!sliderRef.current) {
+      DEBUG_SWIPE && console.warn("[SwipeToJoin] sliderRef is null on mount")
+      return
+    }
+
+    const el = sliderRef.current
+
+    const compute = () => {
+      const w = el.offsetWidth || 0
+      const computedMaxX = Math.max(0, w - HANDLE_W)
+
+      DEBUG_SWIPE && console.log("[SwipeToJoin] measure", {
+        width: w,
+        HANDLE_W,
+        maxX: computedMaxX,
+      })
+
+      setMaxX(computedMaxX)
+    }
+
+    compute()
+
+    const ro = new ResizeObserver(() => compute())
+    ro.observe(el)
+
+    return () => ro.disconnect()
+  }, [])
+
+  const progress = useTransform(x, (latest) => {
+    if (maxX <= 0) return 0
+    const clamped = Math.min(Math.max(latest, 0), maxX)
+    return clamped / maxX
+  })
+
+  const progressWidth = useTransform(progress, (p) => `${p * 100}%`)
+
+  const canInteract = !disabled && !isPreviewMode && !isJoined && !isCompleted && maxX > 0
+
+  DEBUG_SWIPE && console.log("[SwipeToJoin] interaction check", {
+    canInteract,
+    disabled,
+    isPreviewMode,
+    isJoined,
+    isCompleted,
+    maxX,
+  })
+
+  const handleDragEnd = async () => {
+    const p = progress.get()
+
+    DEBUG_SWIPE && console.log("[SwipeToJoin] drag end", {
+      progress: p,
+      threshold,
+      canInteract,
+    })
+
+    setIsDragging(false)
+
+    if (p >= threshold && canInteract) {
+      setIsCompleted(true)
+
+      // Smooth animate to end
+      animate(x, maxX, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
+
+      // Trigger join after tiny delay for "snap" feel
+      setTimeout(() => {
+        DEBUG_SWIPE && console.log("[SwipeToJoin] JOIN TRIGGERED")
+        onJoin()
+      }, 150)
+
+      // Reset UI after (parent should flip isJoined true if join succeeded)
+      setTimeout(() => {
+        setIsCompleted(false)
+        animate(x, 0, { type: "tween", duration: 0.22, ease: [0.16, 1, 0.3, 1] })
+      }, 650)
+
+      return
+    }
+
+    // Not far enough → return to start
+    animate(x, 0, { type: "tween", duration: 0.22, ease: [0.16, 1, 0.3, 1] })
+  }
+
+  // Log drag movement
+  useEffect(() => {
+    const unsub = x.on("change", (latest) => {
+      DEBUG_SWIPE &&
+        console.log("[SwipeToJoin] dragging", {
+          x: latest,
+          progress: progress.get(),
+        })
+    })
+
+    return () => unsub()
+  }, [x, progress])
+
+  // Log prop changes
+  useEffect(() => {
+    DEBUG_SWIPE && console.log("[SwipeToJoin] props changed", {
+      disabled,
+      isPreviewMode,
+      isJoined,
+    })
+  }, [disabled, isPreviewMode, isJoined])
+
+  // If it becomes disabled/joined, reset slider
+  useEffect(() => {
+    if (disabled || isJoined || isPreviewMode) {
+      setIsCompleted(false)
+      animate(x, 0, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
+    }
+  }, [disabled, isJoined, isPreviewMode, x])
+
+  return (
+    <div
+      ref={sliderRef}
+      className={cn(
+        "relative flex-1 h-[56px] rounded-full overflow-hidden",
+        uiMode === "dark"
+          ? "bg-white/10 border border-white/20"
+          : "bg-black/10 border border-black/20"
+      )}
+      style={{ maxWidth: "calc(100% - 80px)" }}
+    >
+      {/* progress fill */}
+      <motion.div
+        className={cn(
+          "absolute inset-0 rounded-full",
+          isCompleted ? "bg-gradient-to-r from-lime-500 to-emerald-500" : "bg-transparent"
+        )}
+        style={{ width: progressWidth }}
+      />
+
+      {/* label */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+        <span
+          className={cn(
+            "text-sm font-semibold transition-colors",
+            isCompleted
+              ? "text-black"
+              : (disabled || isPreviewMode || isJoined)
+                ? (uiMode === "dark" ? "text-white/60" : "text-black/60")
+                : (uiMode === "dark" ? "text-white/90" : "text-black/90")
+          )}
+        >
+          {isCompleted ? "Joined!" : isJoined ? "Joined" : label}
+        </span>
+      </div>
+
+      {/* hint chevron */}
+      {!isDragging && !isCompleted && !isJoined && (
+        <motion.div
+          className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none z-0"
+          animate={{ opacity: [0.35, 0.75, 0.35], x: [0, 4, 0] }}
+          transition={{ duration: 1.5, repeat: Infinity }}
+        >
+          <ChevronRight className={cn("w-4 h-4", uiMode === "dark" ? "text-white/60" : "text-black/60")} />
+        </motion.div>
+      )}
+
+      {/* handle */}
+      <motion.div
+        drag={canInteract ? "x" : false}
+        dragConstraints={{ left: 0, right: maxX }}
+        dragElastic={0.08}
+        onDragStart={() => {
+          DEBUG_SWIPE && console.log("[SwipeToJoin] drag start", {
+            canInteract,
+            maxX,
+          })
+          setIsDragging(true)
+        }}
+        onDragEnd={handleDragEnd}
+        style={{ x }}
+        className={cn(
+          "absolute left-0 top-0 bottom-0 w-14 rounded-full flex items-center justify-center z-10 shadow-lg",
+          "bg-white text-black",
+          canInteract ? "cursor-grab active:cursor-grabbing" : "opacity-50 cursor-not-allowed"
+        )}
+        whileDrag={{ scale: 1.04 }}
+        aria-label="Swipe to join session"
+      >
+        <ChevronRight className="w-5 h-5" />
+      </motion.div>
+    </div>
+  )
 }
 
 export function SessionInvite({
@@ -145,11 +369,12 @@ export function SessionInvite({
   demoParticipants = [],
   hidePreviewBanner = false,
   onJoinClick,
-  onDeclineClick,
   initialIsPublished = false,
   initialSessionStatus,
   rsvpState = "none",
   waitlist = [],
+  publicCode,
+  hostSlug,
 }: SessionInviteProps) {
   console.log(`[SessionInvite] Render:`, { sessionId, initialCoverUrl, initialSport, initialEditMode, initialPreviewMode })
   
@@ -170,7 +395,7 @@ export function SessionInvite({
   
   // Celebration animation state for joined state
   const [shouldCelebrate, setShouldCelebrate] = useState(false)
-  const prevRsvpStateRef = useRef<"none" | "joined" | "declined" | "waitlisted">(rsvpState)
+  const prevRsvpStateRef = useRef<"none" | "joined" | "waitlisted">(rsvpState)
   
   // Detect join transition and trigger celebration (only once, not on preview mode)
   useEffect(() => {
@@ -287,38 +512,38 @@ export function SessionInvite({
     }
   }
 
-  // Handle share invite link
+  // Handle share invite link - opens PublishShareSheet
   const handleShareInviteLink = async () => {
-    if (!actualSessionId) return
-
-    try {
-      const { getPublishedSessionInfo } = await import("@/app/host/sessions/[id]/actions")
-      const result = await getPublishedSessionInfo(actualSessionId)
-
-      if (!result.ok) {
+    const { getInviteShareUrl } = await import("@/lib/invite-url")
+    
+    // Generate URL from props or current URL
+    const inviteUrl = getInviteShareUrl({ hostSlug, publicCode })
+    
+    if (!inviteUrl || !hostSlug || !publicCode) {
+      // If session is not published, show helpful message
+      if (!publicCode) {
         toast({
-          title: "Cannot share invite",
-          description: result.error || "Session is not published yet.",
+          title: "Publish to generate link",
+          description: "Publish the session to get a live invite link.",
+          variant: "default",
+        })
+      } else {
+        toast({
+          title: "Can't generate share link",
+          description: "Missing invite link information.",
           variant: "destructive",
         })
-        return
       }
-
-      const inviteLink = `${window.location.origin}/${result.hostSlug}/${result.publicCode}`
-      setPublishedUrl(inviteLink)
-      setPublishedHostSlug(result.hostSlug)
-      setPublishedCode(result.publicCode)
-      setPublishedHostName(result.hostName || null)
-      setIsShareFromButton(true) // Mark as opened from share button
-      setPublishShareSheetOpen(true)
-    } catch (error: any) {
-      console.error("[handleShareInviteLink] Error:", error)
-      toast({
-        title: "Failed to share invite",
-        description: error?.message || "Please try again.",
-        variant: "destructive",
-      })
+      return
     }
+
+    // Set up the share sheet with the invite URL
+    setPublishedUrl(inviteUrl)
+    setPublishedHostSlug(hostSlug)
+    setPublishedCode(publicCode)
+    setPublishedHostName(initialHostName || null)
+    setIsShareFromButton(true) // Mark as opened from share button
+    setPublishShareSheetOpen(true) // Opens the share sheet
   }
 
   // Update actualSessionId when sessionId prop changes
@@ -2720,46 +2945,34 @@ export function SessionInvite({
 
           {/* Waiting List Card - only show on public invite (not preview/edit) */}
           {!isEditMode && !isPreviewMode && waitlist.length > 0 && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.4, delay: 0.4 }}
-              >
-                <Card className={`${glassCard} p-6`}>
-                  <div className="flex items-center justify-between mb-2">
-                    <h2 className={`text-lg font-semibold ${strongText}`}>Waiting list</h2>
-                    <Badge className="bg-amber-500/20 text-amber-400 border-amber-500/30">
-                      {waitlist.length} waiting
-                    </Badge>
-                  </div>
-                  <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
-                    {waitlist.map((participant) => {
-                      const initial = (participant.display_name?.trim()?.[0] ?? "?").toUpperCase()
-                      return (
-                        <motion.div
-                          key={participant.id}
-                          whileHover={{ scale: 1.05, y: -2 }}
-                          transition={{ duration: 0.2 }}
-                          className="flex flex-col items-center gap-2 min-w-[80px]"
-                        >
-                          <div className="relative">
-                            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-amber-400 to-amber-600 p-0.5">
-                              <div className={`w-full h-full rounded-full ${uiMode === "dark" ? "bg-slate-100" : "bg-white"} flex items-center justify-center border border-white/10`}>
-                                <span className={`text-lg font-semibold ${uiMode === "dark" ? "text-black" : "text-black"}`}>
-                                  {initial}
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-                          <p className={`mt-1 w-14 truncate text-center text-[11px] ${mutedText}`}>
-                            {participant.display_name}
-                          </p>
-                        </motion.div>
-                      )
-                    })}
-                  </div>
-                </Card>
-              </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.4 }}
+            >
+              <Card className={`${glassCard} p-6`}>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className={`text-sm font-medium ${mutedText}`}>Waitlist</h3>
+                  <Badge className="bg-amber-500/10 text-amber-400/70 border-amber-500/20 text-xs">
+                    {waitlist.length}
+                  </Badge>
+                </div>
+                <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+                  {waitlist.map((participant) => (
+                    <div
+                      key={participant.id}
+                      className={cn(
+                        "px-3 py-1.5 rounded-full whitespace-nowrap",
+                        "bg-white/5 border border-white/10",
+                        "text-xs text-white/70"
+                      )}
+                    >
+                      {participant.display_name}
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            </motion.div>
           )}
 
           {isEditMode && !isPreviewMode && (
@@ -2914,15 +3127,24 @@ export function SessionInvite({
                     <p className={`text-sm font-medium ${strongText} mb-1`}>Payment proof submitted</p>
                     <p className={`text-xs ${mutedText}`}>Your payment proof is being reviewed by the host.</p>
                   </div>
+                ) : rsvpState === "waitlisted" ? (
+                  <div className="text-center py-6">
+                    <p className={`text-sm ${mutedText} mb-2`}>
+                      Payment can be made once you're confirmed from the waitlist.
+                    </p>
+                    <p className={`text-xs ${mutedText}`}>
+                      We'll notify you if a spot opens up.
+                    </p>
+                  </div>
                 ) : (
                   <>
                     {/* Determine if payment upload should be enabled */}
-                    {/* Allow upload if: public participant view AND (user has joined OR not yet joined - allow flexibility) */}
+                    {/* Allow upload if: public participant view AND user has joined (not waitlisted) */}
                     {(() => {
                       const isPublicParticipantView = !isEditMode && !!onJoinClick
                       const isHostPreview = isPreviewMode && !onJoinClick
-                      // Allow upload for public participants (not host preview) - enabled after joining, but also allow before joining for flexibility
-                      const canUploadPaymentProof = isPublicParticipantView && !isHostPreview
+                      // Allow upload for public participants (not host preview) - only if joined (not waitlisted)
+                      const canUploadPaymentProof = isPublicParticipantView && !isHostPreview && rsvpState === "joined"
                       
                       return (
                         <>
@@ -3495,6 +3717,7 @@ export function SessionInvite({
         publicCode={publishedCode}
         sessionId={actualSessionId}
         uiMode={uiMode}
+        hostName={publishedHostName}
         title={isShareFromButton ? "Share invite link" : undefined}
         description={isShareFromButton ? "Share your invite link with participants." : undefined}
       />
@@ -3516,14 +3739,41 @@ export function SessionInvite({
             {/* Joined state: Green glass premium UI */}
             {rsvpState === "joined" ? (
               <div className={cn(
-                "rounded-2xl p-4 shadow-2xl flex flex-col gap-3",
+                "rounded-2xl p-4 shadow-2xl relative",
                 "border border-emerald-400/15",
-                "bg-emerald-500/20 backdrop-blur-xl", // Increase the bg opacity (was /10, now /20)
+                "bg-emerald-500/20 backdrop-blur-xl",
                 "shadow-[0_0_0_1px_rgba(16,185,129,0.12)] shadow-emerald-500/10",
                 isPreviewMode && "pointer-events-none"
               )}>
-                {/* Status message with celebration animation */}
-                <div className="flex flex-col gap-1 pb-2">
+                {/* Share icon - top-right corner */}
+                {actualSessionId && !demoMode && (
+                  <Button
+                    onClick={(e) => {
+                      if (isPreviewMode) {
+                        e.preventDefault()
+                        return
+                      }
+                      handleShareInviteLink()
+                    }}
+                    variant="ghost"
+                    size="icon"
+                    disabled={isPreviewMode}
+                    className={cn(
+                      "absolute top-3 right-3 h-11 w-11 rounded-full",
+                      uiMode === "dark"
+                        ? "text-white hover:bg-white/10"
+                        : "text-black hover:bg-black/10",
+                      isPreviewMode && "opacity-50 cursor-not-allowed"
+                    )}
+                    aria-label="Share invite link"
+                  >
+                    <Share2 className="h-5 w-5" />
+                  </Button>
+                )}
+
+                {/* Title and subtitle - centered content */}
+                <div className="flex flex-col gap-2 pr-12">
+                  {/* Title with celebration animation */}
                   <div className="flex items-center gap-2">
                     <p className="text-base font-semibold text-white">
                       🎉 You're in!
@@ -3555,56 +3805,11 @@ export function SessionInvite({
                       )}
                     </AnimatePresence>
                   </div>
-                  <p className="text-xs text-white/70">
+                  
+                  {/* Subtitle - below title with clear spacing */}
+                  <p className="text-xs text-white/60 leading-relaxed">
                     You can change your response anytime.
                   </p>
-                </div>
-                
-                {/* Decline button and Share icon */}
-                <div className="flex justify-center items-center gap-2 w-full">
-                  <Button
-                    onClick={(e) => {
-                      if (isPreviewMode) {
-                        e.preventDefault()
-                        return
-                      }
-                      onDeclineClick?.()
-                    }}
-                    disabled={isPreviewMode}
-                    className={cn(
-                      "rounded-full h-12 px-6 font-medium shadow-lg",
-                      "bg-gradient-to-r from-red-400 to-red-600 hover:from-red-500 hover:to-red-700",
-                      uiMode === "dark" ? "text-black" : "text-white",
-                      "shadow-red-500/20",
-                      isPreviewMode && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    Decline
-                  </Button>
-                  {actualSessionId && !demoMode && (
-                    <Button
-                      onClick={(e) => {
-                        if (isPreviewMode) {
-                          e.preventDefault()
-                          return
-                        }
-                        handleShareInviteLink()
-                      }}
-                      variant="ghost"
-                      size="icon"
-                      disabled={isPreviewMode}
-                      className={cn(
-                        "h-12 w-12 rounded-full",
-                        uiMode === "dark"
-                          ? "text-white hover:bg-white/10"
-                          : "text-black hover:bg-black/10",
-                        isPreviewMode && "opacity-50 cursor-not-allowed"
-                      )}
-                      aria-label="Share invite link"
-                    >
-                      <Share2 className="h-5 w-5" />
-                    </Button>
-                  )}
                 </div>
               </div>
             ) : rsvpState === "waitlisted" ? (
@@ -3625,25 +3830,6 @@ export function SessionInvite({
                   </p>
                 </div>
                 <div className="flex justify-center items-center gap-2 w-full">
-                  <Button
-                    onClick={(e) => {
-                      if (isPreviewMode) {
-                        e.preventDefault()
-                        return
-                      }
-                      onDeclineClick?.()
-                    }}
-                    disabled={isPreviewMode}
-                    className={cn(
-                      "flex-1 max-w-[130px] rounded-full h-12 font-medium shadow-lg",
-                      "bg-gradient-to-r from-red-400 to-red-600 hover:from-red-500 hover:to-red-700",
-                      uiMode === "dark" ? "text-black" : "text-white",
-                      "shadow-red-500/20",
-                      isPreviewMode && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    Decline
-                  </Button>
                   {actualSessionId && !demoMode && (
                     <Button
                       onClick={(e) => {
@@ -3671,83 +3857,33 @@ export function SessionInvite({
                 </div>
               </div>
             ) : (
-              /* Default state for none/declined */
-              <div className={`${glassCard} rounded-2xl p-4 shadow-2xl ${rsvpState !== "none" ? "flex flex-col gap-3" : "flex gap-3"}`}>
-                {/* Show status message if user has declined */}
-                {rsvpState !== "none" && (
-                  <div className="flex flex-col gap-1 pb-2">
-                    <p className={`text-base font-semibold ${uiMode === "dark" ? "text-white" : "text-black"}`}>
-                      You're marked as not going
-                    </p>
-                    <p className={`text-xs ${uiMode === "dark" ? "text-white/60" : "text-black/60"}`}>
-                      Plans changed? You can join again.
-                    </p>
-                  </div>
-                )}
-                
+              /* Default state - show swipe slider (rsvpState is "none") */
+              <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
                 <div className="flex justify-center items-center gap-2 w-full">
-                  {/* Show appropriate button based on RSVP state */}
-                  {rsvpState === "none" ? (
-                    <>
-                      <Button 
-                        onClick={onJoinClick || undefined}
-                        className="flex-1 max-w-[170px] bg-gradient-to-r from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] hover:from-[var(--theme-accent)] hover:to-[var(--theme-accent-dark)] text-black font-medium rounded-full h-12 shadow-lg shadow-[var(--theme-accent)]/20"
-                      >
-                        Join session
-                      </Button>
-                      <Button
-                        onClick={onDeclineClick || undefined}
-                        className={cn(
-                          "flex-1 max-w-[130px] rounded-full h-12 font-medium shadow-lg",
-                          "bg-gradient-to-r from-red-400 to-red-600 hover:from-red-500 hover:to-red-700",
-                          uiMode === "dark" ? "text-black" : "text-white",
-                          "shadow-red-500/20"
-                        )}
-                      >
-                        Decline
-                      </Button>
-                      {actualSessionId && !demoMode && (
-                        <Button
-                          onClick={handleShareInviteLink}
-                          variant="ghost"
-                          size="icon"
-                          className={cn(
-                            "h-12 w-12 rounded-full",
-                            uiMode === "dark"
-                              ? "text-white hover:bg-white/10"
-                              : "text-black hover:bg-black/10"
-                          )}
-                          aria-label="Share invite link"
-                        >
-                          <Share2 className="h-5 w-5" />
-                        </Button>
+                  {/* Swipe to Join Slider */}
+                  <SwipeToJoinSlider
+                    onJoin={onJoinClick || (() => {})}
+                    disabled={isPreviewMode}
+                    uiMode={uiMode}
+                    isPreviewMode={isPreviewMode}
+                    label="Join session"
+                    isJoined={false}
+                  />
+                  {actualSessionId && !demoMode && (
+                    <Button
+                      onClick={handleShareInviteLink}
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        "h-12 w-12 rounded-full",
+                        uiMode === "dark"
+                          ? "text-white hover:bg-white/10"
+                          : "text-black hover:bg-black/10"
                       )}
-                    </>
-                  ) : (
-                    <>
-                      <Button 
-                        onClick={onJoinClick || undefined}
-                        className="flex-1 bg-gradient-to-r from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] hover:from-[var(--theme-accent)] hover:to-[var(--theme-accent-dark)] text-black font-medium rounded-full h-12 shadow-lg shadow-[var(--theme-accent)]/20"
-                      >
-                        Join instead
-                      </Button>
-                      {actualSessionId && !demoMode && (
-                        <Button
-                          onClick={handleShareInviteLink}
-                          variant="ghost"
-                          size="icon"
-                          className={cn(
-                            "h-12 w-12 rounded-full",
-                            uiMode === "dark"
-                              ? "text-white hover:bg-white/10"
-                              : "text-black hover:bg-black/10"
-                          )}
-                          aria-label="Share invite link"
-                        >
-                          <Share2 className="h-5 w-5" />
-                        </Button>
-                      )}
-                    </>
+                      aria-label="Share invite link"
+                    >
+                      <Share2 className="h-5 w-5" />
+                    </Button>
                   )}
                 </div>
               </div>

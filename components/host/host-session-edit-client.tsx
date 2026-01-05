@@ -17,6 +17,8 @@ interface HostSessionEditClientProps {
   initialDescription: string | null
   initialIsPublished: boolean
   initialSessionStatus?: "draft" | "open" | "closed" | "completed" | "cancelled" // Session status for draft update logic
+  publicCode?: string | null // Public code for sharing
+  hostSlug?: string | null // Host slug for sharing
 }
 
 export function HostSessionEditClient({
@@ -34,6 +36,8 @@ export function HostSessionEditClient({
   initialDescription,
   initialIsPublished,
   initialSessionStatus,
+  publicCode,
+  hostSlug,
 }: HostSessionEditClientProps) {
   return (
     <SessionInvite
@@ -51,6 +55,8 @@ export function HostSessionEditClient({
       initialDescription={initialDescription}
       initialIsPublished={initialIsPublished}
       initialSessionStatus={initialSessionStatus}
+      publicCode={publicCode}
+      hostSlug={hostSlug}
     />
   )
 }

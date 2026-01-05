@@ -78,6 +78,8 @@ async function HostSessionEditContent({
       initialDescription={session.description || null}
       initialIsPublished={isPublished} // Pass published status
       initialSessionStatus={session.status} // Pass session status for draft update logic
+      publicCode={(session as any).public_code || null} // Pass publicCode for sharing
+      hostSlug={(session as any).host_slug || null} // Pass hostSlug for sharing
     />
   )
 }
