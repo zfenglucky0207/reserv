@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server"
-import { createClient } from "@/lib/supabase/server/server"
+import { createClient, createAdminClient } from "@/lib/supabase/server/server"
 import { log } from "@/lib/logger"
+
+// Explicitly use Node.js runtime (not Edge) for Supabase compatibility
+export const runtime = "nodejs"
 
 export async function POST(req: Request) {
   const traceId = req.headers.get("x-trace-id") ?? `join_${Date.now()}`
@@ -34,13 +37,38 @@ export async function POST(req: Request) {
       )
     }
 
+    // Use admin client for inserts to bypass RLS (trusted server-side operation)
+    // We still validate session access using the regular client
     const supabase = await createClient()
+    
+    // Verify service role key exists (critical for production)
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    if (!serviceRoleKey) {
+      log("error", "join_missing_service_role_key", {
+        traceId,
+        hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+        hasAnonKey: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      })
+      return NextResponse.json(
+        { 
+          error: "Server configuration error", 
+          detail: "Service role key is missing. Please check environment variables.",
+          traceId 
+        },
+        { status: 500 }
+      )
+    }
+    
+    const adminSupabase = createAdminClient()
 
-    // Log Supabase URL (host only, not full key) for debugging
+    // Log Supabase configuration (host only, not full keys) for debugging
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
     log("info", "join_supabase_config", {
       traceId,
       supabaseHost: supabaseUrl ? new URL(supabaseUrl).hostname : "missing",
+      hasServiceRoleKey: !!serviceRoleKey,
+      hasAnonKey: !!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
+      runtime: "nodejs",
     })
 
     // 1) Fetch session by public code
@@ -180,7 +208,8 @@ export async function POST(req: Request) {
       }
 
       // Update existing participant
-      const updateRes = await supabase
+      // Use admin client to bypass RLS (we've already validated session is open)
+      const updateRes = await adminSupabase
         .from("participants")
         .update({
           status: newStatus,
@@ -246,7 +275,8 @@ export async function POST(req: Request) {
       if (isFull) {
         if (waitlistEnabled) {
           // Join waitlist instead
-          const waitlistRes = await supabase
+          // Use admin client to bypass RLS (we've already validated session is open)
+          const waitlistRes = await adminSupabase
             .from("participants")
             .insert({
               session_id: sessionRes.data.id,
@@ -263,12 +293,37 @@ export async function POST(req: Request) {
             error: waitlistRes.error?.message,
             errorCode: (waitlistRes.error as any)?.code,
             participantId: waitlistRes.data?.id,
+            hasData: !!waitlistRes.data,
+            hasError: !!waitlistRes.error,
           })
 
           if (waitlistRes.error) {
+            // Log full error details for production debugging
+            log("error", "join_waitlist_insert_error", {
+              traceId,
+              error: waitlistRes.error.message,
+              code: (waitlistRes.error as any)?.code,
+              details: (waitlistRes.error as any)?.details,
+              hint: (waitlistRes.error as any)?.hint,
+              sessionId: sessionRes.data.id,
+            })
             insertError = waitlistRes.error
+          } else if (!waitlistRes.data) {
+            // Edge case: no error but also no data
+            log("error", "join_waitlist_insert_no_data", {
+              traceId,
+              sessionId: sessionRes.data.id,
+            })
+            return NextResponse.json(
+              { error: "Failed to create waitlist entry", traceId },
+              { status: 500 }
+            )
           } else {
             participantId = waitlistRes.data.id
+            log("info", "join_waitlist_success", {
+              traceId,
+              participantId: waitlistRes.data.id,
+            })
             return NextResponse.json(
               { ok: true, traceId, participantId: waitlistRes.data.id, waitlisted: true },
               { status: 200 }
@@ -296,7 +351,8 @@ export async function POST(req: Request) {
         }
       } else {
         // Insert new participant
-        const insertRes = await supabase
+        // Use admin client to bypass RLS (we've already validated session is open)
+        const insertRes = await adminSupabase
           .from("participants")
           .insert({
             session_id: sessionRes.data.id,
@@ -313,29 +369,68 @@ export async function POST(req: Request) {
           error: insertRes.error?.message,
           errorCode: (insertRes.error as any)?.code,
           participantId: insertRes.data?.id,
+          hasData: !!insertRes.data,
+          hasError: !!insertRes.error,
         })
 
         if (insertRes.error) {
+          // Log full error details for production debugging
+          log("error", "join_participant_insert_error", {
+            traceId,
+            error: insertRes.error.message,
+            code: (insertRes.error as any)?.code,
+            details: (insertRes.error as any)?.details,
+            hint: (insertRes.error as any)?.hint,
+            sessionId: sessionRes.data.id,
+          })
           insertError = insertRes.error
+        } else if (!insertRes.data) {
+          // Edge case: no error but also no data
+          log("error", "join_participant_insert_no_data", {
+            traceId,
+            sessionId: sessionRes.data.id,
+          })
+          return NextResponse.json(
+            { error: "Failed to create participant", traceId },
+            { status: 500 }
+          )
         } else {
           participantId = insertRes.data.id
+          log("info", "join_participant_insert_success", {
+            traceId,
+            participantId: insertRes.data.id,
+          })
         }
       }
     }
 
     if (insertError) {
       // RLS will usually show up here as "new row violates row-level security policy"
+      const errorCode = (insertError as any)?.code
+      const errorDetails = (insertError as any)?.details
+      const errorHint = (insertError as any)?.hint
+      const isRLSError = insertError.message?.includes("row-level security") || 
+                        insertError.message?.includes("RLS") ||
+                        errorCode === "42501"
+      
       log("error", "join_participant_insert_failed", {
         traceId,
         error: insertError.message,
-        code: (insertError as any)?.code,
-        details: (insertError as any)?.details,
-        hint: (insertError as any)?.hint,
+        code: errorCode,
+        details: errorDetails,
+        hint: errorHint,
+        isRLSError,
+        sessionId: sessionRes.data.id,
+        guestKey: finalGuestKey,
       })
+      
       return NextResponse.json(
         {
-          error: "Join failed",
+          error: isRLSError 
+            ? "Permission denied. Please check your session permissions."
+            : "Join failed",
           detail: insertError.message,
+          code: errorCode,
           traceId,
         },
         { status: 403 }

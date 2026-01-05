@@ -251,8 +251,30 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostSl
         }),
       })
 
-      const json = await res.json().catch(() => null)
-      log("info", "join_response", { traceId, status: res.status, ok: res.ok, json })
+      // Parse response with better error handling
+      let json: any = null
+      try {
+        const text = await res.text()
+        json = text ? JSON.parse(text) : null
+      } catch (e) {
+        log("error", "join_response_parse_error", { 
+          traceId, 
+          status: res.status, 
+          error: String(e)
+        })
+        json = null
+      }
+      
+      log("info", "join_response", { 
+        traceId, 
+        status: res.status, 
+        ok: res.ok, 
+        hasJson: !!json,
+        jsonKeys: json ? Object.keys(json) : [],
+        jsonOk: json?.ok,
+        jsonParticipantId: json?.participantId,
+        json
+      })
 
       if (!res.ok) {
         const errorMessage = json?.error || json?.detail || "Join failed"
@@ -273,10 +295,18 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostSl
             variant: "destructive",
           })
         } else if (res.status === 403) {
+          const detailMessage = json?.detail || errorMessage
           toast({
             title: "Access denied",
-            description: errorMessage || "You don't have permission to join this session.",
+            description: detailMessage || "You don't have permission to join this session. Please contact the host.",
             variant: "destructive",
+          })
+          // Log the full error for debugging
+          log("error", "join_403_details", {
+            traceId,
+            error: errorMessage,
+            detail: json?.detail,
+            code: json?.code,
           })
         } else {
           toast({
@@ -288,23 +318,78 @@ function PublicSessionViewContent({ session, participants, waitlist = [], hostSl
         return
       }
 
-      // Success
-      if (json?.ok) {
-        log("info", "join_success_client", { traceId, participantId: json.participantId, waitlisted: json.waitlisted })
-        setRsvpState(json.waitlisted ? "waitlisted" : "joined")
+      // Success - handle 200 status code (even if json parsing failed or json.ok is missing)
+      if (res.ok && res.status === 200) {
+        // Check if response indicates success
+        const isSuccess = json?.ok === true || (json && !json.error && json.participantId)
+        
+        if (!isSuccess) {
+          log("warn", "join_200_but_not_success", { traceId, json })
+          toast({
+            title: "Join incomplete",
+            description: json?.error || "Please refresh the page to see your status.",
+            variant: "default",
+          })
+          return
+        }
+        
+        log("info", "join_success_client", { 
+          traceId, 
+          participantId: json?.participantId, 
+          waitlisted: json?.waitlisted,
+          hasParticipantId: !!json?.participantId,
+          fullJson: json,
+        })
+        
+        if (!json?.participantId) {
+          log("error", "join_success_but_no_participant_id", { traceId, json })
+          toast({
+            title: "Join incomplete",
+            description: "Please refresh the page to see your status.",
+            variant: "default",
+          })
+          return
+        }
+        
+        // Update state - waitlisted defaults to false if not present
+        const isWaitlisted = json.waitlisted === true
+        setRsvpState(isWaitlisted ? "waitlisted" : "joined")
+        
         // Calculate spots left
         const currentCount = participants.length
         const capacity = session.capacity
         const remaining = capacity ? Math.max(0, capacity - currentCount - 1) : null
         setSpotsLeft(remaining)
+        
         // Show success message
         setShowSuccessMessage(true)
-        // Auto-hide after 3 seconds
+        
+        // Show success toast
+        toast({
+          title: isWaitlisted ? "You're on the waitlist! ✅" : "You're in! 🎉",
+          description: isWaitlisted 
+            ? "We'll notify you if a spot opens up."
+            : "Your name is now visible to the group.",
+          variant: "default",
+        })
+        
+        // Refresh the page after a short delay to show updated participant list
+        setTimeout(() => {
+          window.location.reload()
+        }, 1500)
+        
+        // Auto-hide success message after 3 seconds
         setTimeout(() => {
           setShowSuccessMessage(false)
         }, 3000)
-        // Refresh the page to show updated participant list
-        router.refresh()
+      } else if (res.ok && res.status !== 200) {
+        // Unexpected: res.ok but not 200
+        log("warn", "join_unexpected_status", { 
+          traceId, 
+          status: res.status, 
+          ok: res.ok, 
+          json 
+        })
       }
     } catch (error: any) {
       toast({
