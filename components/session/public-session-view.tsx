@@ -373,112 +373,40 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         payload: requestPayload,
       }, traceId))
 
-      // Use API route for better logging and diagnostics
-      const res = await fetch("/api/join", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-trace-id": traceId,
-        },
-        body: JSON.stringify(requestPayload),
-      })
-
-      // Parse response with better error handling
-      let json: any = null
-      let responseText: string = ""
-      try {
-        responseText = await res.text()
-        // Check if response is HTML (error page)
-        if (responseText.trim().startsWith("<!DOCTYPE") || responseText.trim().startsWith("<html")) {
-          const error = "Server returned HTML instead of JSON"
-          logError("join_response_is_html", withTrace({ 
-            status: res.status,
-            contentType: res.headers.get("content-type"),
-            responsePreview: responseText.substring(0, 200),
-            stage: "response_parse",
-          }, traceId))
-          setLastJoinError(error)
-          // Try to extract error from HTML or show generic message
-          toast({
-            title: "Server error",
-            description: "The server returned an error page. Please try again or contact support.",
-            variant: "destructive",
-          })
-          return
-        }
-        json = responseText ? JSON.parse(responseText) : null
-      } catch (e) {
-        const error = `Failed to parse response: ${String(e)}`
-        logError("join_response_parse_error", withTrace({ 
-          status: res.status, 
-          error: String(e),
-          responsePreview: responseText.substring(0, 200),
-          contentType: res.headers.get("content-type"),
-          stage: "response_parse",
-        }, traceId))
-        setLastJoinError(error)
-        json = null
-        
-        // If we can't parse JSON and it's not HTML, show error
-        if (!responseText.trim().startsWith("<!DOCTYPE")) {
-          toast({
-            title: "Invalid response",
-            description: "The server returned an unexpected response. Please try again.",
-            variant: "destructive",
-          })
-          return
-        }
-      }
+      // Use server action for type-safe join
+      const result = await joinSession(publicCode, name, guestKey, phone || null, traceId)
       
       logInfo("join_response", withTrace({ 
-        status: res.status, 
-        ok: res.ok, 
-        hasJson: !!json,
-        jsonKeys: json ? Object.keys(json) : [],
-        bodySnippet: json ? JSON.stringify(json).substring(0, 200) : null,
-        participantId: json?.participantId || null,
-        rsvpStatus: json?.waitlisted ? "waitlisted" : json?.ok ? "joined" : null,
+        ok: result.ok,
+        participantId: result.ok ? result.participantId : null,
+        waitlisted: result.ok ? result.waitlisted : null,
+        alreadyJoined: result.ok ? result.alreadyJoined : null,
+        joinedAs: result.ok ? result.joinedAs : null,
+        error: result.ok ? null : result.error,
+        code: result.ok ? null : result.code,
       }, traceId))
 
-      if (!res.ok) {
-        const errorMessage = json?.error || json?.detail || "Join failed"
+      if (!result.ok) {
+        const errorMessage = result.error || "Join failed"
         logError("join_failed_client", withTrace({ 
-          status: res.status, 
           error: errorMessage,
-          errorMessage,
+          code: result.code,
           stack: new Error().stack,
-          responseText: responseText.substring(0, 500),
-          stage: "api_response",
+          stage: "server_action_response",
         }, traceId))
         setLastJoinError(errorMessage)
         
-        if (res.status === 404) {
-            toast({
-            title: "Session not found",
-            description: "Please check the invite link and try again.",
-              variant: "destructive",
-            })
-        } else if (res.status === 409 && json?.code === "CAPACITY_EXCEEDED") {
-            toast({
-            title: "Session is full",
-            description: json?.waitlistDisabled 
-              ? "This session is full and waitlist is disabled. Please contact the host."
-              : "This session is full. Please contact the host or try again later.",
-              variant: "destructive",
-            })
-        } else if (res.status === 403) {
-          const detailMessage = json?.detail || errorMessage
+        if (result.code === "CAPACITY_EXCEEDED") {
           toast({
-            title: "Access denied",
-            description: detailMessage || "You don't have permission to join this session. Please contact the host.",
+            title: "Session is full",
+            description: "This session is full. Please contact the host or try again later.",
             variant: "destructive",
           })
-          // Log the full error for debugging
-          log("error", "join_403_details", {
-            traceId,
-            error: errorMessage,
-            detail: json?.detail,
-            code: json?.code,
+        } else if (errorMessage.includes("not found") || errorMessage.includes("Session not found")) {
+          toast({
+            title: "Session not found",
+            description: "Please check the invite link and try again.",
+            variant: "destructive",
           })
         } else {
           toast({
@@ -490,145 +418,121 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         return
       }
 
-      // Success - handle 200 status code (even if json parsing failed or json.ok is missing)
-      if (res.ok && res.status === 200) {
-        // Check if response indicates success
-        const isSuccess = json?.ok === true || (json && !json.error && json.participantId)
-        
-        if (!isSuccess) {
-          log("warn", "join_200_but_not_success", { traceId, json })
-          toast({
-            title: "Join incomplete",
-            description: json?.error || "Please refresh the page to see your status.",
-            variant: "default",
-          })
-          return
-        }
-        
-        log("info", "join_success_client", { 
-          traceId, 
-          participantId: json?.participantId, 
-          waitlisted: json?.waitlisted,
-          alreadyJoined: json?.alreadyJoined,
-          hasParticipantId: !!json?.participantId,
-          fullJson: json,
+      // Success
+      logInfo("join_success_client", { 
+        traceId, 
+        participantId: result.participantId, 
+        waitlisted: result.waitlisted,
+        alreadyJoined: result.alreadyJoined,
+        hasParticipantId: !!result.participantId,
+      })
+      
+      if (!result.participantId) {
+        logWarn("join_success_but_no_participant_id", withTrace({ traceId }, traceId))
+        toast({
+          title: "Join incomplete",
+          description: "Please refresh the page to see your status.",
+          variant: "default",
         })
-        
-        if (!json?.participantId) {
-          log("error", "join_success_but_no_participant_id", { traceId, json })
-          toast({
-            title: "Join incomplete",
-            description: "Please refresh the page to see your status.",
-            variant: "default",
-          })
-          return
-        }
-        
-        // Update state - waitlisted defaults to false if not present
-        const isWaitlisted = json.waitlisted === true
-        const isAlreadyJoined = json.alreadyJoined === true
-        const joinedAs = json.joinedAs || (isWaitlisted ? "waitlist" : "joined")
-        
-        console.log("[waitlist] API response parsed", {
-          json,
-          isWaitlisted,
-          isAlreadyJoined,
-          joinedAs,
-          jsonWaitlisted: json.waitlisted,
-          jsonJoinedAs: json.joinedAs
-        })
-        
-        setRsvpState(isWaitlisted ? "waitlisted" : "joined")
-        
-        // Optimistically update participants list (NO PAGE REFRESH)
-        if (json.participantId && !isAlreadyJoined) {
-          // Add new participant to the appropriate list
-          const newParticipant: Participant = {
-            id: json.participantId,
-            display_name: name, // Use the name from the join request
-            status: joinedAs === "waitlist" ? "waitlisted" : "confirmed",
-          }
-          
-          if (joinedAs === "waitlist") {
-            console.log("[waitlist] optimistically adding to waitlist", { participant: newParticipant, joinedAs })
-            setWaitlist((prev) => {
-              const updated = [...prev, newParticipant]
-              console.log("[waitlist] waitlist state updated", { prevCount: prev.length, newCount: updated.length, items: updated })
-              return updated
-            })
-          } else {
-            setParticipants((prev) => [...prev, newParticipant])
-          }
-        }
-        
-        // Calculate spots left (use updated participants count)
-        const updatedParticipants = joinedAs === "waitlist" ? participants : (json.participantId && !isAlreadyJoined ? [...participants, { id: json.participantId, display_name: name, status: "confirmed" as const }] : participants)
-        const currentCount = updatedParticipants.filter((p: any) => p.status === "confirmed").length
-        const capacity = session.capacity
-        const remaining = capacity ? Math.max(0, capacity - currentCount) : null
-        setSpotsLeft(remaining)
-        
-        // Refetch participants from client (without router.refresh or page reload)
-        // This ensures we have the latest data without a full page refresh
-        const refetchParticipants = async () => {
-          try {
-            console.log("[waitlist] refetching participants", { sessionId: session.id, traceId })
-            const supabase = createClient()
-            const { data: allParticipants, error } = await supabase
-              .from("participants")
-              .select("id, display_name, status")
-              .eq("session_id", session.id)
-              .in("status", ["confirmed", "waitlisted"])
-              .order("created_at", { ascending: true })
-            
-            console.log("[waitlist] refetch result", {
-              error: error?.message,
-              allParticipantsCount: allParticipants?.length || 0,
-              allParticipants: allParticipants?.map(p => ({ id: p.id, name: p.display_name, status: p.status }))
-            })
-            
-            if (!error && allParticipants) {
-              const confirmed = allParticipants.filter((p: any) => p.status === "confirmed")
-              const waitlisted = allParticipants.filter((p: any) => p.status === "waitlisted")
-              
-              console.log("[waitlist] after filtering", {
-                confirmedCount: confirmed.length,
-                waitlistedCount: waitlisted.length,
-                confirmed: confirmed.map(p => ({ id: p.id, name: p.display_name, status: p.status })),
-                waitlisted: waitlisted.map(p => ({ id: p.id, name: p.display_name, status: p.status }))
-              })
-              
-              setParticipants(confirmed)
-              setWaitlist(waitlisted)
-              
-              // Recalculate spots left with fresh data
-              const freshCount = confirmed.length
-              const freshRemaining = capacity ? Math.max(0, capacity - freshCount) : null
-              setSpotsLeft(freshRemaining)
-              logInfo("join_refetch_success", withTrace({ confirmedCount: confirmed.length, waitlistCount: waitlisted.length }, traceId))
-            } else {
-              console.error("[waitlist] refetch error", { error: error?.message, errorCode: (error as any)?.code })
-              logError("join_refetch_failed", withTrace({ error: error?.message }, traceId))
-            }
-          } catch (error: any) {
-            console.error("[waitlist] refetch exception", { error: error.message, stack: error.stack })
-            logError("join_refetch_exception", withTrace({ error: error.message }, traceId))
-          }
-        }
-        
-        // Refetch after a short delay to get server truth (NO PAGE RELOAD)
-        setTimeout(() => {
-          refetchParticipants()
-        }, 500)
-      } else if (res.ok && res.status !== 200) {
-        // Unexpected: res.ok but not 200
-        log("warn", "join_unexpected_status", { 
-          traceId, 
-          status: res.status, 
-          ok: res.ok, 
-          json 
-        })
+        return
       }
+      
+      // Update state - waitlisted defaults to false if not present
+      const isWaitlisted = result.waitlisted === true
+      const isAlreadyJoined = result.alreadyJoined === true
+      const joinedAs = result.joinedAs || (isWaitlisted ? "waitlist" : "joined")
+      
+      console.log("[waitlist] Server action response parsed", {
+        result,
+        isWaitlisted,
+        isAlreadyJoined,
+        joinedAs,
+        resultWaitlisted: result.waitlisted,
+        resultJoinedAs: result.joinedAs
+      })
+      
+      setRsvpState(isWaitlisted ? "waitlisted" : "joined")
+      
+      // Optimistically update participants list (NO PAGE REFRESH)
+      if (result.participantId && !isAlreadyJoined) {
+        // Add new participant to the appropriate list
+        const newParticipant: Participant = {
+          id: result.participantId,
+          display_name: name, // Use the name from the join request
+          status: joinedAs === "waitlist" ? "waitlisted" : "confirmed",
+        }
+        
+        if (joinedAs === "waitlist") {
+          console.log("[waitlist] optimistically adding to waitlist", { participant: newParticipant, joinedAs })
+          setWaitlist((prev) => {
+            const updated = [...prev, newParticipant]
+            console.log("[waitlist] waitlist state updated", { prevCount: prev.length, newCount: updated.length, items: updated })
+            return updated
+          })
+        } else {
+          setParticipants((prev) => [...prev, newParticipant])
+        }
+      }
+      
+      // Calculate spots left (use updated participants count)
+      const updatedParticipants = joinedAs === "waitlist" ? participants : (result.participantId && !isAlreadyJoined ? [...participants, { id: result.participantId, display_name: name, status: "confirmed" as const }] : participants)
+      const currentCount = updatedParticipants.filter((p: any) => p.status === "confirmed").length
+      const capacity = session.capacity
+      const remaining = capacity ? Math.max(0, capacity - currentCount) : null
+      setSpotsLeft(remaining)
+      
+      // Refetch participants from client (without router.refresh or page reload)
+      // This ensures we have the latest data without a full page refresh
+      const refetchParticipants = async () => {
+        try {
+          console.log("[waitlist] refetching participants", { sessionId: session.id, traceId })
+          const supabase = createClient()
+          const { data: allParticipants, error } = await supabase
+            .from("participants")
+            .select("id, display_name, status")
+            .eq("session_id", session.id)
+            .in("status", ["confirmed", "waitlisted"])
+            .order("created_at", { ascending: true })
+          
+          console.log("[waitlist] refetch result", {
+            error: error?.message,
+            allParticipantsCount: allParticipants?.length || 0,
+            allParticipants: allParticipants?.map(p => ({ id: p.id, name: p.display_name, status: p.status }))
+          })
+          
+          if (!error && allParticipants) {
+            const confirmed = allParticipants.filter((p: any) => p.status === "confirmed")
+            const waitlisted = allParticipants.filter((p: any) => p.status === "waitlisted")
+            
+            console.log("[waitlist] after filtering", {
+              confirmedCount: confirmed.length,
+              waitlistedCount: waitlisted.length,
+              confirmed: confirmed.map(p => ({ id: p.id, name: p.display_name, status: p.status })),
+              waitlisted: waitlisted.map(p => ({ id: p.id, name: p.display_name, status: p.status }))
+            })
+            
+            setParticipants(confirmed)
+            setWaitlist(waitlisted)
+            
+            // Recalculate spots left with fresh data
+            const freshCount = confirmed.length
+            const freshRemaining = capacity ? Math.max(0, capacity - freshCount) : null
+            setSpotsLeft(freshRemaining)
+            logInfo("join_refetch_success", withTrace({ confirmedCount: confirmed.length, waitlistCount: waitlisted.length }, traceId))
+          } else {
+            console.error("[waitlist] refetch error", { error: error?.message, errorCode: (error as any)?.code })
+            logError("join_refetch_failed", withTrace({ error: error?.message }, traceId))
+          }
+        } catch (error: any) {
+          console.error("[waitlist] refetch exception", { error: error.message, stack: error.stack })
+          logError("join_refetch_exception", withTrace({ error: error.message }, traceId))
+        }
+      }
+      
+      // Refetch after a short delay to get server truth (NO PAGE RELOAD)
+      setTimeout(() => {
+        refetchParticipants()
+      }, 500)
     } catch (error: any) {
       const errorMsg = error?.message || "Something went wrong. Please try again."
       logError("join_failed_client", withTrace({

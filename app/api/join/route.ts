@@ -1,974 +1,578 @@
 import { NextResponse } from "next/server"
 import { createAnonymousClient, createAdminClient } from "@/lib/supabase/server/server"
-import { log, logInfo, logWarn, logError, withTrace, debugEnabled } from "@/lib/logger"
+import { log, logInfo, logWarn, logError, withTrace } from "@/lib/logger"
 
-// Explicitly use Node.js runtime (not Edge) for Supabase compatibility
+// Runtime configuration for Supabase compatibility
 export const runtime = "nodejs"
-
-// Force dynamic rendering to avoid static generation issues
 export const dynamic = "force-dynamic"
-
-// Disable static generation for this route
 export const revalidate = 0
 
-// Ensure we always return JSON, never HTML
-const jsonResponse = (data: any, status: number = 200) => {
-  return NextResponse.json(data, {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-    },
-  })
+// ============================================================================
+// Types
+// ============================================================================
+
+type RequestBody = {
+  publicCode?: string
+  name?: string
+  phone?: string | null
+  guestKey?: string
 }
+
+type Session = {
+  id: string
+  status: "open" | "draft" | "closed" | "completed" | "cancelled"
+  capacity: number | null
+  waitlist_enabled: boolean
+}
+
+type ParticipantStatus = "confirmed" | "waitlisted"
+
+type CapacityCheck = {
+  isFull: boolean
+  confirmedCount: number
+  waitlistEnabled: boolean
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+/**
+ * Parse and validate request body
+ */
+function parseAndValidateRequest(body: unknown): { 
+  publicCode: string
+  name: string
+  phone: string | null
+  guestKey: string
+} | { error: string; status: number } {
+  if (!body || typeof body !== "object") {
+    return { error: "Invalid request body", status: 400 }
+  }
+
+  const { publicCode, name, phone, guestKey } = body as RequestBody
+
+  if (!publicCode || typeof publicCode !== "string") {
+    return { error: "Missing invite code", status: 400 }
+  }
+
+  if (!name || typeof name !== "string" || !name.trim()) {
+    return { error: "Name is required", status: 400 }
+  }
+
+  if (!guestKey || typeof guestKey !== "string") {
+    return { error: "Guest key is required", status: 400 }
+  }
+
+  return {
+    publicCode,
+    name: name.trim(),
+    phone: phone?.trim() || null,
+    guestKey,
+  }
+}
+
+/**
+ * Validate environment variables
+ */
+function validateEnv(): { error?: string } {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+
+  if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
+    return {
+      error: "Server configuration error: Missing required Supabase environment variables.",
+    }
+  }
+
+  return {}
+}
+
+/**
+ * Get session by public code
+ */
+async function getSessionByPublicCode(
+  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  publicCode: string
+): Promise<{ session: Session } | { error: string; status: number }> {
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("id, status, capacity, public_code, host_id, host_slug, waitlist_enabled")
+    .eq("public_code", publicCode)
+    .maybeSingle()
+
+  if (error) {
+    logError("join_session_lookup_error", withTrace(
+      { error: error.message, code: (error as any)?.code },
+      "session_lookup"
+    ))
+    return { error: "Session lookup failed", status: 500 }
+  }
+
+  if (!data) {
+    return { error: "Session not found", status: 404 }
+  }
+
+  if (data.status !== "open") {
+    return { error: `Session is ${data.status}. Only open sessions can be joined.`, status: 409 }
+  }
+
+  return { session: data as Session }
+}
+
+/**
+ * Check session capacity and waitlist status
+ */
+async function checkCapacity(
+  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  sessionId: string,
+  capacity: number | null,
+  waitlistEnabled: boolean
+): Promise<CapacityCheck | { error: string; status: number }> {
+  const { count, error } = await supabase
+    .from("participants")
+    .select("*", { count: "exact", head: true })
+    .eq("session_id", sessionId)
+    .eq("status", "confirmed")
+
+  if (error) {
+    logError("join_capacity_check_error", withTrace(
+      { error: error.message },
+      "capacity_check"
+    ))
+    return { error: "Failed to check capacity", status: 500 }
+  }
+
+  const confirmedCount = count ?? 0
+  // Session is full if capacity is set and confirmed count meets or exceeds it
+  // Note: Race condition possible between check and insert, but database constraints
+  // will prevent exceeding capacity (unique constraints + application logic)
+  const isFull = capacity !== null && confirmedCount >= capacity
+
+  return {
+    isFull,
+    confirmedCount,
+    // Default to enabled if null/undefined (matches database default)
+    waitlistEnabled: waitlistEnabled !== false,
+  }
+}
+
+/**
+ * Determine participant status based on capacity and waitlist settings
+ */
+function determineParticipantStatus(
+  capacityCheck: CapacityCheck
+): ParticipantStatus | { error: string; status: number; code?: string } {
+  if (!capacityCheck.isFull) {
+    return "confirmed"
+  }
+
+  if (capacityCheck.waitlistEnabled) {
+    return "waitlisted"
+  }
+
+  return {
+    error: "Session is full",
+    status: 409,
+    code: "CAPACITY_EXCEEDED",
+  }
+}
+
+/**
+ * Handle duplicate key error by fetching existing participant
+ * Returns null if fetch fails (participant exists but we can't retrieve it)
+ */
+async function handleDuplicateParticipant(
+  adminSupabase: ReturnType<typeof createAdminClient>,
+  sessionId: string,
+  guestKey: string,
+  traceId: string
+): Promise<{ participantId: string; status: ParticipantStatus } | null> {
+  const { data, error } = await adminSupabase
+    .from("participants")
+    .select("id, status")
+    .eq("session_id", sessionId)
+    .eq("guest_key", guestKey)
+    .maybeSingle() // Use maybeSingle since participant might not exist (edge case)
+
+  if (error) {
+    logError("join_duplicate_fetch_failed", withTrace({ error: error.message }, traceId))
+    return null
+  }
+
+  if (!data) {
+    // Edge case: duplicate key error but participant not found
+    // This shouldn't happen, but handle gracefully
+    logError("join_duplicate_fetch_not_found", withTrace({ sessionId, guestKey }, traceId))
+    return null
+  }
+
+  // Map database enum to our type (handles "invited" and "cancelled" as confirmed for response)
+  const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+  
+  return {
+    participantId: data.id,
+    status,
+  }
+}
+
+/**
+ * Upsert participant (insert or update)
+ */
+async function upsertParticipant(
+  adminSupabase: ReturnType<typeof createAdminClient>,
+  sessionId: string,
+  name: string,
+  phone: string | null,
+  guestKey: string,
+  status: ParticipantStatus,
+  existingParticipantId?: string
+): Promise<
+  | { participantId: string; status: ParticipantStatus }
+  | { error: string; code?: string; isDuplicate?: boolean }
+> {
+  const payload = {
+    session_id: sessionId,
+    display_name: name,
+    contact_phone: phone,
+    guest_key: guestKey,
+    status,
+  }
+
+  if (existingParticipantId) {
+    // Update existing participant
+    const { data, error } = await adminSupabase
+      .from("participants")
+      .update(payload)
+      .eq("id", existingParticipantId)
+      .select("id, status")
+      .single()
+
+    if (error) {
+      return { error: error.message, code: (error as any)?.code }
+    }
+
+    if (!data) {
+      // Update succeeded but no data returned (shouldn't happen with .single())
+      return { error: "Failed to update participant" }
+    }
+
+    // Map database enum to our type
+    const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+    
+    return {
+      participantId: data.id,
+      status,
+    }
+  } else {
+    // Insert new participant
+    const { data, error } = await adminSupabase
+      .from("participants")
+      .insert(payload)
+      .select("id, status")
+      .single()
+
+    if (error) {
+      const errorCode = (error as any)?.code
+      // PostgreSQL unique constraint violation
+      const isDuplicate = errorCode === "23505" || 
+                         error.message?.toLowerCase().includes("duplicate key") ||
+                         error.message?.toLowerCase().includes("unique constraint")
+      return { error: error.message, code: errorCode, isDuplicate }
+    }
+
+    if (!data) {
+      // Insert succeeded but no data returned (shouldn't happen with .single())
+      return { error: "Failed to create participant" }
+    }
+
+    // Map database enum to our type
+    const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+    
+    return {
+      participantId: data.id,
+      status,
+    }
+  }
+}
+
+// ============================================================================
+// Main Route Handler
+// ============================================================================
 
 export async function POST(req: Request) {
-  // Initialize traceId early to use in error handling
-  let traceId = `join_${Date.now()}`
-  let startedAt = Date.now()
-  
-  try {
-    traceId = req.headers.get("x-trace-id") ?? traceId
-    startedAt = Date.now()
-    
-    // Log request start
-    const origin = req.headers.get("origin") || "unknown"
-    const userAgent = req.headers.get("user-agent") || "unknown"
-    const hasAuthHeader = !!req.headers.get("authorization")
-    
-    logInfo("join_api_start", withTrace({
-      method: req.method,
-      url: req.url,
-      origin,
-      userAgent: userAgent.substring(0, 100), // Truncate for logs
-      hasAuthHeader,
-    }, traceId))
-  } catch (headerError: any) {
-    console.error("[join] Error reading headers:", headerError)
-    // Continue with default traceId - don't throw, just log
-  }
+  const traceId = req.headers.get("x-trace-id") ?? `join_${Date.now()}`
+  const startedAt = Date.now()
 
   try {
-    let body
+    // Log request start
+    try {
+      logInfo("join_api_start", withTrace(
+        {
+          method: req.method,
+          url: req.url,
+        },
+        traceId
+      ))
+    } catch {
+      // Logger failed - continue anyway
+    }
+
+    // Parse and validate request
+    let body: unknown
     try {
       body = await req.json()
-    } catch (parseError: any) {
-      logError("join_request_parse_failed", withTrace({
-        error: parseError?.message,
-        stage: "request_parse",
-      }, traceId))
-      return jsonResponse(
-        { error: "Invalid request body", traceId },
-        400
-      )
+    } catch {
+      return NextResponse.json({ error: "Invalid request body", traceId }, { status: 400 })
     }
-    const { publicCode, name, phone, guestKey } = body ?? {}
 
-    logInfo("join_request", withTrace({
-      publicCode,
-      hasName: !!name,
-      nameLength: name?.length || 0,
-      hasPhone: !!phone,
-      hasGuestKey: !!guestKey,
-      bodyParsed: debugEnabled() ? body : { publicCode, hasName: !!name, hasPhone: !!phone, hasGuestKey: !!guestKey },
-    }, traceId))
+    const validation = parseAndValidateRequest(body)
+    if ("error" in validation) {
+      logWarn("join_bad_request", withTrace({ reason: validation.error }, traceId))
+      return NextResponse.json({ error: validation.error, traceId }, { status: validation.status })
+    }
 
-    if (!publicCode || typeof publicCode !== "string") {
-      log("warn", "join_bad_request", { traceId, reason: "missing_publicCode" })
-      return jsonResponse(
-        { error: "Missing invite code", traceId },
-        400
+    const { publicCode, name, phone, guestKey } = validation
+
+    // Validate environment
+    const envCheck = validateEnv()
+    if (envCheck.error) {
+      logError("join_missing_env_vars", withTrace({}, traceId))
+      return NextResponse.json(
+        { error: "Server configuration error", detail: envCheck.error, traceId },
+        { status: 500 }
       )
     }
 
-    if (!name || typeof name !== "string" || !name.trim()) {
-      log("warn", "join_bad_request", { traceId, reason: "missing_name" })
-      return jsonResponse(
-        { error: "Name is required", traceId },
-        400
-      )
-    }
+    // Create Supabase clients
+    let supabase: Awaited<ReturnType<typeof createAnonymousClient>>
+    let adminSupabase: ReturnType<typeof createAdminClient>
 
-    // Verify required environment variables first
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-    const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-    
-    if (!supabaseUrl || !supabaseAnonKey || !serviceRoleKey) {
-      log("error", "join_missing_env_vars", {
-        traceId,
-        hasUrl: !!supabaseUrl,
-        hasAnonKey: !!supabaseAnonKey,
-        hasServiceRoleKey: !!serviceRoleKey,
-      })
-      return jsonResponse(
-        { 
-          error: "Server configuration error", 
-          detail: "Missing required Supabase environment variables. Please check Vercel environment variables.",
-          traceId 
-        },
-        500
-      )
-    }
-    
-    // Use anonymous client for public operations (doesn't try to refresh sessions)
-    // This avoids "Invalid Refresh Token" errors when cookies contain stale tokens
-    // Use admin client for inserts to bypass RLS (trusted server-side operation)
-    let supabase
-    let adminSupabase
-    
     try {
-      // Use anonymous client - doesn't attempt auth, avoids refresh token errors
       supabase = await createAnonymousClient()
-      log("info", "join_anonymous_client_created", {
-        traceId,
-        note: "Using anonymous client for public join endpoint",
-      })
-    } catch (clientError: any) {
-      // This should rarely happen, but handle it gracefully
-      log("error", "join_supabase_client_creation_failed", {
-        traceId,
-        error: clientError?.message,
-        stack: clientError?.stack,
-      })
-      return jsonResponse(
-        { 
-          error: "Server configuration error", 
-          detail: "Failed to create Supabase client.",
-          traceId 
-        },
-        500
+    } catch (error: any) {
+      logError("join_supabase_client_creation_failed", withTrace({ error: error?.message }, traceId))
+      return NextResponse.json(
+        { error: "Server configuration error", detail: "Failed to create Supabase client.", traceId },
+        { status: 500 }
       )
     }
-    
+
     try {
       adminSupabase = createAdminClient()
-      console.log("[waitlist] Admin client created successfully", {
-        hasAdminClient: !!adminSupabase,
-        hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY
-      })
-    } catch (adminError: any) {
-      console.error("[waitlist] Failed to create admin client", {
-        error: adminError.message,
-        stack: adminError.stack
-      })
-      log("error", "join_admin_client_creation_failed", {
-        traceId,
-        error: adminError?.message,
-        stack: adminError?.stack,
-      })
-      return jsonResponse(
-        { 
-          error: "Server configuration error", 
-          detail: "Failed to create admin client.",
-          traceId 
-        },
-        500
+    } catch (error: any) {
+      logError("join_admin_client_creation_failed", withTrace({ error: error?.message }, traceId))
+      return NextResponse.json(
+        { error: "Server configuration error", detail: "Failed to create admin client.", traceId },
+        { status: 500 }
       )
     }
 
-    // Log Supabase configuration (host only, not full keys) for debugging
-    log("info", "join_supabase_config", {
-      traceId,
-      supabaseHost: supabaseUrl ? new URL(supabaseUrl).hostname : "missing",
-      hasServiceRoleKey: !!serviceRoleKey,
-      hasAnonKey: !!supabaseAnonKey,
-      runtime: "nodejs",
-    })
-
-    // 1) Fetch session by public code
-    const sessionRes = await supabase
-      .from("sessions")
-      .select("id, status, capacity, public_code, host_id, host_slug, waitlist_enabled")
-      .eq("public_code", publicCode)
-      .maybeSingle()
-
-    log("info", "join_session_lookup", {
-      traceId,
-      error: sessionRes.error?.message,
-      errorCode: (sessionRes.error as any)?.code,
-      found: !!sessionRes.data,
-      sessionId: sessionRes.data?.id,
-      status: sessionRes.data?.status,
-      publicCodeQueried: publicCode,
-      publicCodeInDB: sessionRes.data?.public_code,
-    })
-
-    // This is the exact place your current "not found or not available" is coming from
-    if (sessionRes.error) {
-      log("error", "join_session_lookup_error", {
-        traceId,
-        error: sessionRes.error.message,
-        code: (sessionRes.error as any)?.code,
-        details: (sessionRes.error as any)?.details,
-        hint: (sessionRes.error as any)?.hint,
-      })
-      return jsonResponse(
-        {
-          error: "Session lookup failed",
-          detail: sessionRes.error.message,
-          traceId,
-        },
-        500
-      )
+    // Get session
+    const sessionResult = await getSessionByPublicCode(supabase, publicCode)
+    if ("error" in sessionResult) {
+      return NextResponse.json({ error: sessionResult.error, traceId }, { status: sessionResult.status })
     }
 
-    if (!sessionRes.data) {
-      log("warn", "join_session_not_found", {
-        traceId,
-        publicCode,
-        reason: "no_rows_returned",
-      })
-      return jsonResponse(
-        { error: "Session not found", traceId, publicCode },
-        404
-      )
-    }
+    const { session } = sessionResult
 
-    // 2) Basic availability checks
-    if (sessionRes.data.status !== "open") {
-      log("warn", "join_session_not_open", {
-        traceId,
-        sessionId: sessionRes.data.id,
-        status: sessionRes.data.status,
-      })
-      return jsonResponse(
-        { error: `Session is ${sessionRes.data.status}. Only open sessions can be joined.`, traceId },
-        409
-      )
-    }
-
-    // 3) Validate guest key (must be provided from client)
-    if (!guestKey || typeof guestKey !== "string") {
-      log("warn", "join_bad_request", { traceId, reason: "missing_guestKey" })
-      return jsonResponse(
-        { error: "Guest key is required", traceId },
-        400
-      )
-    }
-    const finalGuestKey = guestKey
-
-    // 4) Check if participant already exists by guest_key
-    const { data: existingParticipant } = await supabase
+    // Check for existing participant (idempotency check)
+    const { data: existingParticipant, error: participantCheckError } = await supabase
       .from("participants")
       .select("id, status")
-      .eq("session_id", sessionRes.data.id)
-      .eq("guest_key", finalGuestKey)
+      .eq("session_id", session.id)
+      .eq("guest_key", guestKey)
       .maybeSingle()
 
-    log("info", "join_participant_check", {
-      traceId,
-      existingParticipantId: existingParticipant?.id,
-      existingStatus: existingParticipant?.status,
-    })
-
-    // 5) Insert or update participant
-    const trimmedName = name.trim()
-    const trimmedPhone = phone?.trim() || null
-
-    let participantId: string | undefined
-    let insertError: any = null
-
-    if (existingParticipant) {
-      // Check capacity before updating (in case they're waitlisted and session now has space)
-      const { count, error: countError } = await supabase
-        .from("participants")
-        .select("*", { count: "exact", head: true })
-        .eq("session_id", sessionRes.data.id)
-        .eq("status", "confirmed")
-
-      if (countError) {
-        log("error", "join_capacity_check_error", {
-          traceId,
-          error: countError.message,
-        })
-      return jsonResponse(
-        { error: "Failed to check capacity", traceId },
-        500
-      )
-      }
-
-      const isFull = sessionRes.data.capacity && count !== null && count >= sessionRes.data.capacity
-      const waitlistEnabled = sessionRes.data.waitlist_enabled !== false
-
-      logInfo("join_capacity_check", withTrace({
-        capacity: sessionRes.data.capacity,
-        joinedCount: count,
-        isFull,
-        isClosed: sessionRes.data.status !== "open",
-        waitlistEnabled,
-      }, traceId))
-
-      // If session is full and waitlist is enabled, keep them waitlisted
-      // If session is full and waitlist is disabled, return error
-      // If session has space, confirm them
-      let newStatus: "confirmed" | "waitlisted" = "confirmed"
-      if (isFull && waitlistEnabled) {
-        newStatus = "waitlisted"
-      } else if (isFull && !waitlistEnabled) {
-        logWarn("join_capacity_exceeded_existing", withTrace({
-          capacity: sessionRes.data.capacity,
-          currentCount: count,
-          waitlistEnabled,
-          waitlistEnabledRaw: sessionRes.data.waitlist_enabled,
-          reason: "waitlist_disabled",
-          stage: "capacity_check",
-        }, traceId))
-        return jsonResponse(
-          { error: "Session is full", traceId, code: "CAPACITY_EXCEEDED" },
-          409
-        )
-      }
-
-      // Update existing participant
-      // Use admin client to bypass RLS (we've already validated session is open)
-      const updateRes = await adminSupabase
-        .from("participants")
-        .update({
-          status: newStatus,
-          display_name: trimmedName,
-          contact_phone: trimmedPhone,
-        })
-        .eq("id", existingParticipant.id)
-        .select("id, status")
-        .single()
-
-      logInfo("join_participant_write_result", withTrace({
-        participantId: updateRes.data?.id || null,
-        rsvp_status: updateRes.data?.status || null,
-        payment_status: null,
-        error: updateRes.error?.message || null,
-        errorCode: updateRes.error ? (updateRes.error as any)?.code : null,
-        errorDetails: updateRes.error ? (updateRes.error as any)?.details : null,
-        hint: updateRes.error ? (updateRes.error as any)?.hint : null,
-        newStatus,
-        wasWaitlisted: existingParticipant.status === "waitlisted",
-        stage: "participant_update",
-      }, traceId))
-
-      if (updateRes.error) {
-        insertError = updateRes.error
-      } else {
-        participantId = updateRes.data.id
-        // Return waitlisted response if they're still waitlisted
-        if (newStatus === "waitlisted") {
-          return jsonResponse(
-            { ok: true, traceId, participantId: updateRes.data.id, waitlisted: true, joinedAs: "waitlist" },
-            200
-          )
-        }
-      }
-    } else {
-      // Check capacity before inserting
-      const { count, error: countError } = await supabase
-        .from("participants")
-        .select("*", { count: "exact", head: true })
-        .eq("session_id", sessionRes.data.id)
-        .eq("status", "confirmed")
-
-      if (countError) {
-        log("error", "join_capacity_check_error", {
-          traceId,
-          error: countError.message,
-        })
-      return jsonResponse(
-        { error: "Failed to check capacity", traceId },
-        500
-      )
-      }
-
-      const isFull = sessionRes.data.capacity && count !== null && count >= sessionRes.data.capacity
-      const waitlistEnabled = sessionRes.data.waitlist_enabled !== false
-
-      console.log("[waitlist] Capacity check for NEW participant", {
-        traceId,
-        capacity: sessionRes.data.capacity,
-        currentCount: count,
-        isFull,
-        waitlistEnabled,
-        waitlistEnabledRaw: sessionRes.data.waitlist_enabled,
-        waitlistEnabledType: typeof sessionRes.data.waitlist_enabled,
-        waitlistEnabledValue: sessionRes.data.waitlist_enabled,
-        sessionId: sessionRes.data.id,
-        condition: `capacity=${sessionRes.data.capacity}, count=${count}, isFull=${isFull}`
-      })
-
-      log("info", "join_capacity_check", {
-        traceId,
-        capacity: sessionRes.data.capacity,
-        currentCount: count,
-        isFull,
-        waitlistEnabled,
-        waitlistEnabledRaw: sessionRes.data.waitlist_enabled,
-        waitlistEnabledType: typeof sessionRes.data.waitlist_enabled,
-        waitlistEnabledValue: sessionRes.data.waitlist_enabled,
-      })
-
-      if (isFull) {
-        console.log("[waitlist] ✅ Session is FULL - entering waitlist logic", {
-          traceId,
-          isFull,
-          waitlistEnabled,
-          willInsertWaitlist: waitlistEnabled,
-          capacity: sessionRes.data.capacity,
-          currentCount: count,
-          sessionId: sessionRes.data.id
-        })
-        console.log("[waitlist] Session is full, checking waitlist_enabled", {
-          isFull,
-          waitlistEnabled,
-          waitlistEnabledRaw: sessionRes.data.waitlist_enabled,
-          capacity: sessionRes.data.capacity,
-          count
-        })
-        
-        if (waitlistEnabled) {
-          console.log("[waitlist] ✅ Waitlist is ENABLED - proceeding with waitlist insert", {
-            traceId,
-            sessionId: sessionRes.data.id,
-            hasAdminClient: !!adminSupabase
-          })
-          // Join waitlist instead
-          console.log("[waitlist] Waitlist enabled, inserting as waitlisted", {
-            sessionId: sessionRes.data.id,
-            name: trimmedName,
-            guestKey: finalGuestKey
-          })
-          
-          logInfo("join_participant_write_start", withTrace({
-            sessionId: sessionRes.data.id,
-            action: "insert_waitlist",
-          }, traceId))
-          
-          // Use admin client to bypass RLS (we've already validated session is open)
-          console.log("[waitlist] About to insert with admin client", {
-            hasAdminClient: !!adminSupabase,
-            sessionId: sessionRes.data.id,
-            name: trimmedName,
-            phone: trimmedPhone,
-            guestKey: finalGuestKey,
-            status: "waitlisted"
-          })
-          
-          // Use exact enum value from schema: "waitlisted" (from participant_status enum)
-          const insertPayload: {
-            session_id: string
-            display_name: string
-            contact_phone: string | null
-            guest_key: string
-            status: "waitlisted"
-          } = {
-            session_id: sessionRes.data.id,
-            display_name: trimmedName,
-            contact_phone: trimmedPhone,
-            guest_key: finalGuestKey,
-            status: "waitlisted", // Must match enum: "invited" | "confirmed" | "cancelled" | "waitlisted"
-          }
-          
-          console.log("[waitlist] Insert payload (typed)", {
-            ...insertPayload,
-            statusType: typeof insertPayload.status,
-            statusValue: insertPayload.status
-          })
-          
-          const waitlistRes = await adminSupabase
-            .from("participants")
-            .insert(insertPayload)
-            .select("id, status")
-            .single()
-          
-          console.log("[waitlist] Insert completed", {
-            hasData: !!waitlistRes.data,
-            hasError: !!waitlistRes.error,
-            data: waitlistRes.data,
-            error: waitlistRes.error ? {
-              message: waitlistRes.error.message,
-              code: (waitlistRes.error as any)?.code,
-              details: (waitlistRes.error as any)?.details,
-              hint: (waitlistRes.error as any)?.hint
-            } : null
-          })
-
-          console.log("[waitlist] Insert result", {
-            success: !!waitlistRes.data,
-            error: waitlistRes.error?.message,
-            participantId: waitlistRes.data?.id,
-            status: waitlistRes.data?.status,
-            errorCode: (waitlistRes.error as any)?.code,
-            errorDetails: (waitlistRes.error as any)?.details
-          })
-          
-          logInfo("join_participant_write_result", withTrace({
-            participantId: waitlistRes.data?.id || null,
-            rsvp_status: waitlistRes.data?.status || null,
-            payment_status: null,
-            error: waitlistRes.error?.message || null,
-            errorCode: waitlistRes.error ? (waitlistRes.error as any)?.code : null,
-            errorDetails: waitlistRes.error ? (waitlistRes.error as any)?.details : null,
-            hint: waitlistRes.error ? (waitlistRes.error as any)?.hint : null,
-            hasData: !!waitlistRes.data,
-            hasError: !!waitlistRes.error,
-            stage: "waitlist_insert",
-          }, traceId))
-
-          if (waitlistRes.error) {
-            console.error("[waitlist] Insert failed", {
-              error: waitlistRes.error.message,
-              code: (waitlistRes.error as any)?.code,
-              details: (waitlistRes.error as any)?.details,
-              hint: (waitlistRes.error as any)?.hint
-            })
-            const errorCode = (waitlistRes.error as any)?.code
-            const isDuplicateKey = errorCode === "23505" || 
-                                   waitlistRes.error.message?.includes("duplicate key") ||
-                                   waitlistRes.error.message?.includes("unique constraint")
-            
-            // Handle duplicate key error (idempotent join)
-            if (isDuplicateKey) {
-              logInfo("join_duplicate_detected_waitlist", withTrace({
-                error: waitlistRes.error.message,
-                code: errorCode,
-                details: (waitlistRes.error as any)?.details,
-                sessionId: sessionRes.data.id,
-                guestKey: finalGuestKey,
-                stage: "duplicate_waitlist_join_handling",
-              }, traceId))
-              
-              // Fetch existing participant
-              const { data: existingParticipant, error: fetchError } = await adminSupabase
-                .from("participants")
-                .select("id, status, display_name")
-                .eq("session_id", sessionRes.data.id)
-                .eq("guest_key", finalGuestKey)
-                .single()
-              
-              if (fetchError || !existingParticipant) {
-                logError("join_duplicate_fetch_failed_waitlist", withTrace({
-                  error: fetchError?.message || "Participant not found after duplicate error",
-                  code: errorCode,
-                  sessionId: sessionRes.data.id,
-                  guestKey: finalGuestKey,
-                }, traceId))
-                insertError = waitlistRes.error // Fall back to original error
-              } else {
-                // Successfully found existing participant - treat as success
-                participantId = existingParticipant.id
-                logInfo("join_already_joined_waitlist", withTrace({
-                  participantId: existingParticipant.id,
-                  status: existingParticipant.status,
-                  displayName: existingParticipant.display_name,
-                  sessionId: sessionRes.data.id,
-                  stage: "duplicate_waitlist_join_success",
-                }, traceId))
-                
-                // Return success with alreadyJoined flag
-                return jsonResponse(
-                  { 
-                    ok: true, 
-                    traceId, 
-                    participantId: existingParticipant.id,
-                    alreadyJoined: true,
-                    waitlisted: existingParticipant.status === "waitlisted",
-                    joinedAs: existingParticipant.status === "waitlisted" ? "waitlist" : "joined",
-                  },
-                  200
-                )
-              }
-            } else {
-              // Log full error details for production debugging
-              console.error("[waitlist] Non-duplicate error during waitlist insert", {
-                error: waitlistRes.error.message,
-                code: errorCode,
-                details: (waitlistRes.error as any)?.details,
-                hint: (waitlistRes.error as any)?.hint
-              })
-              logError("join_waitlist_insert_error", withTrace({
-                error: waitlistRes.error.message,
-                code: errorCode,
-                details: (waitlistRes.error as any)?.details,
-                hint: (waitlistRes.error as any)?.hint,
-                sessionId: sessionRes.data.id,
-                stage: "waitlist_insert",
-              }, traceId))
-              // Return error immediately - don't fall through to confirmed insert
-              return jsonResponse(
-                { 
-                  error: waitlistRes.error?.message || "Failed to join waitlist", 
-                  traceId,
-                  code: errorCode || "WAITLIST_INSERT_FAILED"
-                },
-                500
-              )
-            }
-          } else if (!waitlistRes.data) {
-            // Edge case: no error but also no data
-            logError("join_waitlist_insert_no_data", withTrace({
-              sessionId: sessionRes.data.id,
-              stage: "waitlist_insert",
-            }, traceId))
-            return jsonResponse(
-              { error: "Failed to create waitlist entry", traceId },
-              500
-            )
-          } else {
-            // SUCCESS: Waitlist insert succeeded
-            participantId = waitlistRes.data.id
-            console.log("[waitlist] ✅ SUCCESS - Waitlist insert completed", {
-              traceId,
-              participantId: waitlistRes.data.id,
-              status: waitlistRes.data.status,
-              sessionId: sessionRes.data.id,
-              name: trimmedName
-            })
-            log("info", "join_waitlist_success", {
-              traceId,
-              participantId: waitlistRes.data.id,
-              status: waitlistRes.data.status,
-            })
-            return jsonResponse(
-              { ok: true, traceId, participantId: waitlistRes.data.id, waitlisted: true, joinedAs: "waitlist" },
-              200
-            )
-          }
-        } else {
-          log("warn", "join_capacity_exceeded", {
-            traceId,
-            capacity: sessionRes.data.capacity,
-            currentCount: count,
-            waitlistEnabled,
-            waitlistEnabledRaw: sessionRes.data.waitlist_enabled,
-            reason: "waitlist_disabled",
-          })
-          return jsonResponse(
-            { 
-              error: "Session is full", 
-              traceId, 
-              code: "CAPACITY_EXCEEDED",
-              waitlistDisabled: true,
-              message: "Session is full and waitlist is disabled. Please contact the host or enable waitlist for this session."
-            },
-            409
-          )
-        }
-      } else {
-        // Insert new participant
-        logInfo("join_participant_write_start", withTrace({
-          sessionId: sessionRes.data.id,
-          action: "insert_confirmed",
-        }, traceId))
-        
-        // Use admin client to bypass RLS (we've already validated session is open)
-        const insertRes = await adminSupabase
-          .from("participants")
-          .insert({
-            session_id: sessionRes.data.id,
-            display_name: trimmedName,
-            contact_phone: trimmedPhone,
-            guest_key: finalGuestKey,
-            status: "confirmed",
-          })
-          .select("id")
-          .single()
-
-        log("info", "join_participant_insert", {
-          traceId,
-          error: insertRes.error?.message,
-          errorCode: (insertRes.error as any)?.code,
-          participantId: insertRes.data?.id,
-          hasData: !!insertRes.data,
-          hasError: !!insertRes.error,
-        })
-
-        if (insertRes.error) {
-          const errorCode = (insertRes.error as any)?.code
-          const isDuplicateKey = errorCode === "23505" || 
-                                 insertRes.error.message?.includes("duplicate key") ||
-                                 insertRes.error.message?.includes("unique constraint")
-          
-          // Handle duplicate key error (idempotent join)
-          if (isDuplicateKey) {
-            logInfo("join_duplicate_detected", withTrace({
-              error: insertRes.error.message,
-              code: errorCode,
-              details: (insertRes.error as any)?.details,
-              sessionId: sessionRes.data.id,
-              guestKey: finalGuestKey,
-              stage: "duplicate_join_handling",
-            }, traceId))
-            
-            // Fetch existing participant
-            const { data: existingParticipant, error: fetchError } = await adminSupabase
-              .from("participants")
-              .select("id, status, display_name")
-              .eq("session_id", sessionRes.data.id)
-              .eq("guest_key", finalGuestKey)
-              .single()
-            
-            if (fetchError || !existingParticipant) {
-              logError("join_duplicate_fetch_failed", withTrace({
-                error: fetchError?.message || "Participant not found after duplicate error",
-                fetchErrorCode: (fetchError as any)?.code,
-                fetchErrorDetails: (fetchError as any)?.details,
-                code: errorCode,
-                sessionId: sessionRes.data.id,
-                guestKey: finalGuestKey,
-                stage: "duplicate_fetch_failed",
-              }, traceId))
-              // Even if fetch fails, we know the participant exists (duplicate key error)
-              // Try one more time with a simpler query or return success anyway
-              // For now, fall back to original error - it will be caught in final handler
-              insertError = insertRes.error // Fall back to original error
-            } else {
-              // Successfully found existing participant - treat as success
-              participantId = existingParticipant.id
-              logInfo("join_already_joined", withTrace({
-                participantId: existingParticipant.id,
-                status: existingParticipant.status,
-                displayName: existingParticipant.display_name,
-                sessionId: sessionRes.data.id,
-                stage: "duplicate_join_success",
-              }, traceId))
-              
-              // Return success with alreadyJoined flag
-              return jsonResponse(
-                { 
-                  ok: true, 
-                  traceId, 
-                  participantId: existingParticipant.id,
-                  alreadyJoined: true,
-                  waitlisted: existingParticipant.status === "waitlisted",
-                },
-                200
-              )
-            }
-          } else {
-            // Log full error details for production debugging
-            log("error", "join_participant_insert_error", {
-              traceId,
-              error: insertRes.error.message,
-              code: errorCode,
-              details: (insertRes.error as any)?.details,
-              hint: (insertRes.error as any)?.hint,
-              sessionId: sessionRes.data.id,
-            })
-            insertError = insertRes.error
-          }
-        } else if (!insertRes.data) {
-          // Edge case: no error but also no data
-          log("error", "join_participant_insert_no_data", {
-            traceId,
-            sessionId: sessionRes.data.id,
-          })
-          return jsonResponse(
-            { error: "Failed to create participant", traceId },
-            500
-          )
-        } else {
-          participantId = insertRes.data.id
-          log("info", "join_participant_insert_success", {
-            traceId,
-            participantId: insertRes.data.id,
-          })
-        }
-      }
+    if (participantCheckError) {
+      // Non-fatal: continue with insert attempt (will handle duplicate if exists)
+      logError("join_participant_check_error", withTrace(
+        { error: participantCheckError.message },
+        traceId
+      ))
     }
 
-    if (insertError) {
-      // RLS will usually show up here as "new row violates row-level security policy"
-      const errorCode = (insertError as any)?.code
-      const errorDetails = (insertError as any)?.details
-      const errorHint = (insertError as any)?.hint
-      const isRLSError = insertError.message?.includes("row-level security") || 
-                        insertError.message?.includes("RLS") ||
-                        errorCode === "42501"
-      const isDuplicateKey = errorCode === "23505" || 
-                            insertError.message?.includes("duplicate key") ||
-                            insertError.message?.includes("unique constraint")
-      
-      // If we still have a duplicate key error here, try one more time to fetch existing participant
-      if (isDuplicateKey && !participantId) {
-        logInfo("join_duplicate_final_attempt", withTrace({
-          error: insertError.message,
-          code: errorCode,
-          sessionId: sessionRes.data.id,
-          guestKey: finalGuestKey,
-          stage: "final_duplicate_handling",
-        }, traceId))
-        
-        const { data: existingParticipant, error: fetchError } = await adminSupabase
-          .from("participants")
-          .select("id, status, display_name")
-          .eq("session_id", sessionRes.data.id)
-          .eq("guest_key", finalGuestKey)
-          .single()
-        
-        if (fetchError) {
-          logError("join_duplicate_final_fetch_error", withTrace({
-            error: fetchError.message,
-            code: (fetchError as any)?.code,
-            details: (fetchError as any)?.details,
-            sessionId: sessionRes.data.id,
-            guestKey: finalGuestKey,
-            stage: "final_duplicate_fetch_error",
-          }, traceId))
-          // Even if fetch fails, we know participant exists (duplicate key error)
-          // Return success anyway - the frontend will handle refreshing to get the participant
-          return jsonResponse(
-            { 
-              ok: true, 
-              traceId, 
-              participantId: null, // We couldn't fetch it, but it exists
-              alreadyJoined: true,
-              waitlisted: false, // Unknown status, but treat as joined
-            },
-            200
-          )
-        }
-        
-        if (existingParticipant) {
-          participantId = existingParticipant.id
-          logInfo("join_already_joined_final", withTrace({
-            participantId: existingParticipant.id,
-            status: existingParticipant.status,
-            displayName: existingParticipant.display_name,
-            sessionId: sessionRes.data.id,
-            stage: "final_duplicate_success",
-          }, traceId))
-          
-          // Return success with alreadyJoined flag
-          return jsonResponse(
-            { 
-              ok: true, 
-              traceId, 
-              participantId: existingParticipant.id,
-              alreadyJoined: true,
-              waitlisted: existingParticipant.status === "waitlisted",
-              joinedAs: existingParticipant.status === "waitlisted" ? "waitlist" : "joined",
-            },
-            200
-          )
-        } else {
-          logError("join_duplicate_final_no_participant", withTrace({
-            sessionId: sessionRes.data.id,
-            guestKey: finalGuestKey,
-            stage: "final_duplicate_no_participant",
-          }, traceId))
-          // Even if we can't find the participant, we know it exists (duplicate key error)
-          // Return success anyway
-          return jsonResponse(
-            { 
-              ok: true, 
-              traceId, 
-              participantId: null,
-              alreadyJoined: true,
-              waitlisted: false,
-              joinedAs: "joined", // Default to joined if we can't determine
-            },
-            200
-          )
-        }
-      }
-      
-      log("error", "join_participant_insert_failed", {
+    logInfo("join_participant_check", withTrace(
+      {
+        existingParticipantId: existingParticipant?.id,
+        existingStatus: existingParticipant?.status,
+      },
+      traceId
+    ))
+
+    // Check capacity
+    const capacityResult = await checkCapacity(
+      supabase,
+      session.id,
+      session.capacity,
+      session.waitlist_enabled
+    )
+
+    if ("error" in capacityResult) {
+      return NextResponse.json({ error: capacityResult.error, traceId }, { status: capacityResult.status })
+    }
+
+    // Determine participant status
+    const statusResult = determineParticipantStatus(capacityResult)
+    if (typeof statusResult === "object" && "error" in statusResult) {
+      logWarn("join_capacity_exceeded", withTrace(
+        {
+          capacity: session.capacity,
+          currentCount: capacityResult.confirmedCount,
+          waitlistEnabled: capacityResult.waitlistEnabled,
+        },
+        traceId
+      ))
+
+      const response: any = {
+        error: statusResult.error,
         traceId,
-        error: insertError.message,
-        code: errorCode,
-        details: errorDetails,
-        hint: errorHint,
-        isRLSError,
-        isDuplicateKey,
-        sessionId: sessionRes.data.id,
-        guestKey: finalGuestKey,
-      })
-      
-      // For duplicate key errors that we couldn't resolve, return 500 (shouldn't happen in normal flow)
-      if (isDuplicateKey && !participantId) {
-        logError("join_duplicate_unresolved", withTrace({
-          error: insertError.message,
-          code: errorCode,
-          sessionId: sessionRes.data.id,
-          guestKey: finalGuestKey,
-          stage: "unresolved_duplicate",
-        }, traceId))
-        return jsonResponse(
+        code: statusResult.code,
+      }
+
+      if (!capacityResult.waitlistEnabled) {
+        response.waitlistDisabled = true
+        response.message =
+          "Session is full and waitlist is disabled. Please contact the host or enable waitlist for this session."
+      }
+
+      return NextResponse.json(response, { status: statusResult.status })
+    }
+
+    const targetStatus = statusResult as ParticipantStatus
+
+    // Upsert participant
+    const upsertResult = await upsertParticipant(
+      adminSupabase,
+      session.id,
+      name,
+      phone,
+      guestKey,
+      targetStatus,
+      existingParticipant?.id
+    )
+
+    // Handle duplicate key error (idempotent join)
+    if ("error" in upsertResult && upsertResult.isDuplicate) {
+      const duplicateResult = await handleDuplicateParticipant(
+        adminSupabase,
+        session.id,
+        guestKey,
+        traceId
+      )
+
+      if (duplicateResult) {
+        logInfo("join_already_joined", withTrace(
           {
-            error: "Internal error: Unable to resolve duplicate join",
-            detail: insertError.message,
-            code: errorCode,
-            traceId,
+            participantId: duplicateResult.participantId,
+            status: duplicateResult.status,
           },
-          500
+          traceId
+        ))
+
+        return NextResponse.json(
+          {
+            ok: true,
+            traceId,
+            participantId: duplicateResult.participantId,
+            alreadyJoined: true,
+            waitlisted: duplicateResult.status === "waitlisted",
+            joinedAs: duplicateResult.status === "waitlisted" ? "waitlist" : "joined",
+          },
+          { status: 200 }
         )
       }
+
+      // Duplicate key error but couldn't fetch participant - treat as success anyway
+      // (participant exists, frontend can refresh to get details)
+      logWarn("join_duplicate_unresolved", withTrace(
+        { sessionId: session.id, guestKey },
+        traceId
+      ))
       
-      return jsonResponse(
+      return NextResponse.json(
         {
-          error: isRLSError 
+          ok: true,
+          traceId,
+          participantId: null,
+          alreadyJoined: true,
+          waitlisted: false, // Unknown status, default to not waitlisted
+        },
+        { status: 200 }
+      )
+    }
+
+    // Handle other errors
+    if ("error" in upsertResult) {
+      logError("join_participant_insert_failed", withTrace(
+        {
+          error: upsertResult.error,
+          code: upsertResult.code,
+        },
+        traceId
+      ))
+
+      const isRLSError =
+        upsertResult.error?.includes("row-level security") ||
+        upsertResult.error?.includes("RLS") ||
+        upsertResult.code === "42501"
+
+      return NextResponse.json(
+        {
+          error: isRLSError
             ? "Permission denied. Please check your session permissions."
             : "Join failed",
-          detail: insertError.message,
-          code: errorCode,
+          detail: upsertResult.error,
+          code: upsertResult.code,
           traceId,
         },
-        403
+        { status: isRLSError ? 403 : 500 }
       )
     }
 
-    log("info", "join_success", {
-      traceId,
-      ms: Date.now() - startedAt,
-      participantId,
-    })
+    // Success
+    const { participantId, status: finalStatus } = upsertResult
 
-    return jsonResponse(
-      { ok: true, traceId, participantId },
-      200
+    logInfo("join_success", withTrace(
+      {
+        ms: Date.now() - startedAt,
+        participantId,
+        status: finalStatus,
+      },
+      traceId
+    ))
+
+    return NextResponse.json(
+      {
+        ok: true,
+        traceId,
+        participantId,
+        ...(finalStatus === "waitlisted" ? { waitlisted: true, joinedAs: "waitlist" } : {}),
+      },
+      { status: 200 }
     )
-  } catch (e: any) {
-    // Log the full error for debugging
-    console.error("[join] Unhandled error:", {
-      traceId,
-      message: e?.message,
-      stack: e?.stack,
-      name: e?.name,
-      cause: e?.cause,
-      error: e,
-    })
-    
-    log("error", "join_unhandled", { 
-      traceId, 
-      message: e?.message, 
-      stack: e?.stack,
-      name: e?.name,
-      cause: e?.cause,
-    })
-    
-    // Always return JSON, never HTML - use try-catch to ensure we never throw
+  } catch (error: any) {
+    // Top-level error handler - always return JSON
     try {
-      return jsonResponse(
-        { 
-          error: "Internal error", 
-          detail: e?.message || "An unexpected error occurred",
-          traceId 
-        },
-        500
-      )
-    } catch (responseError: any) {
-      // If even jsonResponse fails, return a plain JSON response
-      console.error("[join] Failed to create JSON response:", responseError)
-      return new NextResponse(
-        JSON.stringify({ 
-          error: "Internal error", 
-          detail: "Failed to process request",
-          traceId 
-        }),
+      logError("join_unhandled", withTrace(
         {
-          status: 500,
-          headers: {
-            "Content-Type": "application/json",
-          },
-        }
-      )
+          message: error?.message,
+          stack: error?.stack,
+        },
+        traceId
+      ))
+    } catch {
+      // Logger failed - continue anyway
     }
+
+    return NextResponse.json(
+      {
+        error: "Internal error",
+        detail: error?.message || "An unexpected error occurred",
+        traceId,
+      },
+      { status: 500 }
+    )
   }
 }
-

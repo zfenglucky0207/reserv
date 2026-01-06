@@ -1,8 +1,8 @@
 "use server"
 
-import { createClient, createAdminClient } from "@/lib/supabase/server/server"
+import { createClient, createAdminClient, createAnonymousClient } from "@/lib/supabase/server/server"
 import { revalidatePath } from "next/cache"
-import { logInfo, logError, logWarn, withTrace } from "@/lib/logger"
+import { logInfo, logError, logWarn, withTrace, newTraceId } from "@/lib/logger"
 
 /**
  * Get participant RSVP status for a session (by guest_key)
@@ -59,201 +59,484 @@ export async function getParticipantRSVPStatus(
   return { ok: true, status: null }
 }
 
+// ============================================================================
+// Types
+// ============================================================================
+
+type Session = {
+  id: string
+  status: "open" | "draft" | "closed" | "completed" | "cancelled"
+  capacity: number | null
+  waitlist_enabled: boolean
+  host_slug: string | null
+  public_code: string
+}
+
+type ParticipantStatus = "confirmed" | "waitlisted"
+
+type CapacityCheck = {
+  isFull: boolean
+  confirmedCount: number
+  waitlistEnabled: boolean
+}
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
 /**
- * Join a session by public_code (create or update participant with status "confirmed")
- * Enforces capacity limit server-side
- * Uses UPSERT by (session_id, guest_key): updates existing participant or creates new one
+ * Get session by public code
+ */
+async function getSessionByPublicCode(
+  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  publicCode: string
+): Promise<{ session: Session } | { error: string }> {
+  const { data, error } = await supabase
+    .from("sessions")
+    .select("id, status, capacity, public_code, host_id, host_slug, waitlist_enabled")
+    .eq("public_code", publicCode)
+    .maybeSingle()
+
+  if (error) {
+    logError("join_session_lookup_error", withTrace(
+      { error: error.message, code: (error as any)?.code },
+      "session_lookup"
+    ))
+    return { error: "Session lookup failed" }
+  }
+
+  if (!data) {
+    return { error: "Session not found" }
+  }
+
+  if (data.status !== "open") {
+    return { error: `Session is ${data.status}. Only open sessions can be joined.` }
+  }
+
+  return { session: data as Session }
+}
+
+/**
+ * Check session capacity and waitlist status
+ */
+async function checkCapacity(
+  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  sessionId: string,
+  capacity: number | null,
+  waitlistEnabled: boolean
+): Promise<CapacityCheck | { error: string }> {
+  const { count, error } = await supabase
+    .from("participants")
+    .select("*", { count: "exact", head: true })
+    .eq("session_id", sessionId)
+    .eq("status", "confirmed")
+
+  if (error) {
+    logError("join_capacity_check_error", withTrace(
+      { error: error.message },
+      "capacity_check"
+    ))
+    return { error: "Failed to check capacity" }
+  }
+
+  const confirmedCount = count ?? 0
+  // Session is full if capacity is set and confirmed count meets or exceeds it
+  // Note: Race condition possible between check and insert, but database constraints
+  // will prevent exceeding capacity (unique constraints + application logic)
+  const isFull = capacity !== null && confirmedCount >= capacity
+
+  return {
+    isFull,
+    confirmedCount,
+    // Default to enabled if null/undefined (matches database default)
+    waitlistEnabled: waitlistEnabled !== false,
+  }
+}
+
+/**
+ * Determine participant status based on capacity and waitlist settings
+ */
+function determineParticipantStatus(
+  capacityCheck: CapacityCheck
+): ParticipantStatus | { error: string; code: string } {
+  if (!capacityCheck.isFull) {
+    return "confirmed"
+  }
+
+  if (capacityCheck.waitlistEnabled) {
+    return "waitlisted"
+  }
+
+  return {
+    error: "Session is full",
+    code: "CAPACITY_EXCEEDED",
+  }
+}
+
+/**
+ * Handle duplicate key error by fetching existing participant
+ */
+async function handleDuplicateParticipant(
+  adminSupabase: ReturnType<typeof createAdminClient>,
+  sessionId: string,
+  guestKey: string,
+  traceId: string
+): Promise<{ participantId: string; status: ParticipantStatus } | null> {
+  const { data, error } = await adminSupabase
+    .from("participants")
+    .select("id, status")
+    .eq("session_id", sessionId)
+    .eq("guest_key", guestKey)
+    .maybeSingle()
+
+  if (error) {
+    logError("join_duplicate_fetch_failed", withTrace({ error: error.message }, traceId))
+    return null
+  }
+
+  if (!data) {
+    logError("join_duplicate_fetch_not_found", withTrace({ sessionId, guestKey }, traceId))
+    return null
+  }
+
+  // Map database enum to our type
+  const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+  
+  return {
+    participantId: data.id,
+    status,
+  }
+}
+
+/**
+ * Upsert participant (insert or update)
+ */
+async function upsertParticipant(
+  adminSupabase: ReturnType<typeof createAdminClient>,
+  sessionId: string,
+  name: string,
+  phone: string | null,
+  guestKey: string,
+  status: ParticipantStatus,
+  existingParticipantId?: string
+): Promise<
+  | { participantId: string; status: ParticipantStatus }
+  | { error: string; code?: string; isDuplicate?: boolean }
+> {
+  const payload = {
+    session_id: sessionId,
+    display_name: name,
+    contact_phone: phone,
+    guest_key: guestKey,
+    status,
+  }
+
+  if (existingParticipantId) {
+    // Update existing participant
+    const { data, error } = await adminSupabase
+      .from("participants")
+      .update(payload)
+      .eq("id", existingParticipantId)
+      .select("id, status")
+      .single()
+
+    if (error) {
+      return { error: error.message, code: (error as any)?.code }
+    }
+
+    if (!data) {
+      return { error: "Failed to update participant" }
+    }
+
+    // Map database enum to our type
+    const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+    
+    return {
+      participantId: data.id,
+      status,
+    }
+  } else {
+    // Insert new participant
+    const { data, error } = await adminSupabase
+      .from("participants")
+      .insert(payload)
+      .select("id, status")
+      .single()
+
+    if (error) {
+      const errorCode = (error as any)?.code
+      // PostgreSQL unique constraint violation
+      const isDuplicate = errorCode === "23505" || 
+                         error.message?.toLowerCase().includes("duplicate key") ||
+                         error.message?.toLowerCase().includes("unique constraint")
+      return { error: error.message, code: errorCode, isDuplicate }
+    }
+
+    if (!data) {
+      return { error: "Failed to create participant" }
+    }
+
+    // Map database enum to our type
+    const status: ParticipantStatus = data.status === "waitlisted" ? "waitlisted" : "confirmed"
+    
+    return {
+      participantId: data.id,
+      status,
+    }
+  }
+}
+
+/**
+ * Join a session by public_code (create or update participant)
+ * Enforces capacity limit server-side with waitlist support
+ * Uses admin client for writes to bypass RLS
  */
 export async function joinSession(
   publicCode: string,
   name: string,
   guestKey: string,
-  phone?: string | null
-): Promise<{ ok: true } | { ok: false; error: string; code?: "CAPACITY_EXCEEDED" | "SESSION_NOT_FOUND" }> {
-  const supabase = await createClient()
+  phone?: string | null,
+  traceId?: string
+): Promise<
+  | { 
+      ok: true
+      participantId: string | null
+      waitlisted?: boolean
+      alreadyJoined?: boolean
+      joinedAs?: "waitlist" | "joined"
+      traceId: string
+    }
+  | { 
+      ok: false
+      error: string
+      code?: string
+      traceId: string
+    }
+> {
+  const finalTraceId = traceId ?? newTraceId("join")
+  const startedAt = Date.now()
 
-  // Lookup session by public_code
-  // Note: RLS policy `public_select_open_sessions` filters by status='open' automatically
-  // We query without explicit status filter to let RLS handle it (matches page.tsx pattern)
-  const { data: session, error: sessionError } = await supabase
-    .from("sessions")
-    .select("id, capacity, status, host_slug, waitlist_enabled, public_code")
-    .eq("public_code", publicCode)
-    .single()
+  try {
+    // Validate inputs
+    if (!publicCode || typeof publicCode !== "string") {
+      return { ok: false, error: "Missing invite code", traceId: finalTraceId }
+    }
 
-  if (sessionError) {
-    console.error("[joinSession] Error fetching session:", {
-      publicCode,
-      error: sessionError.message,
-      code: sessionError.code,
-      details: sessionError.details,
-      hint: sessionError.hint,
-    })
-    
-    // If it's a permission/RLS error (PostgreSQL error code 42501 = insufficient_privilege)
-    if (sessionError.code === "42501" || sessionError.message?.includes("permission") || sessionError.message?.includes("policy") || sessionError.message?.includes("row-level security")) {
-      console.error("[joinSession] RLS policy may be blocking access. Check public_select_open_sessions policy.")
-      return { 
-        ok: false, 
-        error: "Access denied. Please check that the session is published and open.", 
-        code: "SESSION_NOT_FOUND" 
+    if (!name || typeof name !== "string" || !name.trim()) {
+      return { ok: false, error: "Name is required", traceId: finalTraceId }
+    }
+
+    if (!guestKey || typeof guestKey !== "string") {
+      return { ok: false, error: "Guest key is required", traceId: finalTraceId }
+    }
+
+    const trimmedName = name.trim()
+    const trimmedPhone = phone?.trim() || null
+
+    // Create Supabase clients
+    let supabase: Awaited<ReturnType<typeof createAnonymousClient>>
+    let adminSupabase: ReturnType<typeof createAdminClient>
+
+    try {
+      supabase = await createAnonymousClient()
+    } catch (error: any) {
+      logError("join_supabase_client_creation_failed", withTrace({ error: error?.message }, finalTraceId))
+      return { ok: false, error: "Server configuration error", traceId: finalTraceId }
+    }
+
+    try {
+      adminSupabase = createAdminClient()
+    } catch (error: any) {
+      logError("join_admin_client_creation_failed", withTrace({ error: error?.message }, finalTraceId))
+      return { ok: false, error: "Server configuration error", traceId: finalTraceId }
+    }
+
+    // Get session
+    const sessionResult = await getSessionByPublicCode(supabase, publicCode)
+    if ("error" in sessionResult) {
+      return { ok: false, error: sessionResult.error, traceId: finalTraceId }
+    }
+
+    const { session } = sessionResult
+
+    // Check for existing participant (idempotency check)
+    const { data: existingParticipant, error: participantCheckError } = await supabase
+      .from("participants")
+      .select("id, status")
+      .eq("session_id", session.id)
+      .eq("guest_key", guestKey)
+      .maybeSingle()
+
+    if (participantCheckError) {
+      // Non-fatal: continue with insert attempt (will handle duplicate if exists)
+      logError("join_participant_check_error", withTrace(
+        { error: participantCheckError.message },
+        finalTraceId
+      ))
+    }
+
+    logInfo("join_participant_check", withTrace(
+      {
+        existingParticipantId: existingParticipant?.id,
+        existingStatus: existingParticipant?.status,
+      },
+      finalTraceId
+    ))
+
+    // Check capacity
+    const capacityResult = await checkCapacity(
+      supabase,
+      session.id,
+      session.capacity,
+      session.waitlist_enabled
+    )
+
+    if ("error" in capacityResult) {
+      return { ok: false, error: capacityResult.error, traceId: finalTraceId }
+    }
+
+    // Determine participant status
+    const statusResult = determineParticipantStatus(capacityResult)
+    if (typeof statusResult === "object" && "error" in statusResult) {
+      logWarn("join_capacity_exceeded", withTrace(
+        {
+          capacity: session.capacity,
+          currentCount: capacityResult.confirmedCount,
+          waitlistEnabled: capacityResult.waitlistEnabled,
+        },
+        finalTraceId
+      ))
+
+      return {
+        ok: false,
+        error: statusResult.error,
+        code: statusResult.code,
+        traceId: finalTraceId,
       }
     }
-    
-    // If it's "not found" (PGRST116), the session might not exist or RLS filtered it out
-    if (sessionError.code === "PGRST116") {
-      console.error("[joinSession] Session not found - may be filtered by RLS or doesn't exist:", { publicCode })
-      return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
+
+    const targetStatus = statusResult as ParticipantStatus
+
+    // Upsert participant
+    const upsertResult = await upsertParticipant(
+      adminSupabase,
+      session.id,
+      trimmedName,
+      trimmedPhone,
+      guestKey,
+      targetStatus,
+      existingParticipant?.id
+    )
+
+    // Handle duplicate key error (idempotent join)
+    if ("error" in upsertResult && upsertResult.isDuplicate) {
+      const duplicateResult = await handleDuplicateParticipant(
+        adminSupabase,
+        session.id,
+        guestKey,
+        finalTraceId
+      )
+
+      if (duplicateResult) {
+        logInfo("join_already_joined", withTrace(
+          {
+            participantId: duplicateResult.participantId,
+            status: duplicateResult.status,
+          },
+          finalTraceId
+        ))
+
+        // Revalidate the session page
+        if (session.host_slug && publicCode) {
+          revalidatePath(`/${session.host_slug}/${publicCode}`)
+        }
+
+        return {
+          ok: true,
+          participantId: duplicateResult.participantId,
+          alreadyJoined: true,
+          waitlisted: duplicateResult.status === "waitlisted",
+          joinedAs: duplicateResult.status === "waitlisted" ? "waitlist" : "joined",
+          traceId: finalTraceId,
+        }
+      }
+
+      // Duplicate key error but couldn't fetch participant - treat as success anyway
+      logWarn("join_duplicate_unresolved", withTrace(
+        { sessionId: session.id, guestKey },
+        finalTraceId
+      ))
+
+      if (session.host_slug && publicCode) {
+        revalidatePath(`/${session.host_slug}/${publicCode}`)
+      }
+      
+      return {
+        ok: true,
+        participantId: null,
+        alreadyJoined: true,
+        waitlisted: false,
+        traceId: finalTraceId,
+      }
     }
-    
-    return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
-  }
 
-  if (!session) {
-    console.error("[joinSession] Session not found (no data returned):", { publicCode })
-    return { ok: false, error: "Session not found or not available", code: "SESSION_NOT_FOUND" }
-  }
+    // Handle other errors
+    if ("error" in upsertResult) {
+      logError("join_participant_insert_failed", withTrace(
+        {
+          error: upsertResult.error,
+          code: upsertResult.code,
+        },
+        finalTraceId
+      ))
 
-  // Verify status (RLS should have filtered, but double-check)
-  if (session.status !== "open") {
-    console.error("[joinSession] Session found but status is not 'open':", { 
-      publicCode, 
-      sessionId: session.id, 
-      status: session.status 
-    })
-    return { 
-      ok: false, 
-      error: `Session is ${session.status}. Only open sessions can be joined.`, 
-      code: "SESSION_NOT_FOUND" 
+      return {
+        ok: false,
+        error: upsertResult.error,
+        code: upsertResult.code,
+        traceId: finalTraceId,
+      }
     }
-  }
 
-  // Session found and is open
-  console.log("[joinSession] Session found and verified:", { sessionId: session.id, status: session.status })
+    // Success
+    const { participantId, status: finalStatus } = upsertResult
 
-  const trimmedName = name.trim()
-  const trimmedPhone = phone?.trim() || null
-
-  // Check if participant already exists by guest_key
-  const { data: existingParticipant } = await supabase
-    .from("participants")
-    .select("id, status")
-    .eq("session_id", session.id)
-    .eq("guest_key", guestKey)
-    .single()
-
-  // If participant already exists, update status and name (in case they changed it)
-  if (existingParticipant) {
-    const { error: updateError } = await supabase
-      .from("participants")
-      .update({ 
-        status: "confirmed",
-        display_name: trimmedName,
-        contact_phone: trimmedPhone,
-      })
-      .eq("id", existingParticipant.id)
-
-    if (updateError) {
-      return { ok: false, error: updateError.message }
-    }
+    logInfo("join_success", withTrace(
+      {
+        ms: Date.now() - startedAt,
+        participantId,
+        status: finalStatus,
+      },
+      finalTraceId
+    ))
 
     // Revalidate the session page
     if (session.host_slug && publicCode) {
       revalidatePath(`/${session.host_slug}/${publicCode}`)
     }
 
-    return { ok: true }
-  }
+    return {
+      ok: true,
+      participantId,
+      ...(finalStatus === "waitlisted" ? { waitlisted: true, joinedAs: "waitlist" as const } : {}),
+      traceId: finalTraceId,
+    }
+  } catch (error: any) {
+    // Top-level error handler
+    logError("join_unhandled", withTrace(
+      {
+        message: error?.message,
+        stack: error?.stack,
+      },
+      finalTraceId
+    ))
 
-  // Participant doesn't exist - check capacity before inserting
-  const { count, error: countError } = await supabase
-    .from("participants")
-    .select("*", { count: "exact", head: true })
-    .eq("session_id", session.id)
-    .eq("status", "confirmed")
-
-  if (countError) {
-    return { ok: false, error: countError.message }
-  }
-
-  // Check capacity and waitlist logic
-  const isFull = session.capacity && count !== null && count >= session.capacity
-  const waitlistEnabled = (session as any).waitlist_enabled !== false // Default to true if null/undefined
-
-  if (isFull) {
-    // Session is full - check if waitlist is enabled
-    if (waitlistEnabled) {
-      // Join waitlist instead
-      const { error: insertError } = await supabase.from("participants").insert({
-        session_id: session.id,
-        display_name: trimmedName,
-        contact_phone: trimmedPhone,
-        guest_key: guestKey,
-        status: "waitlisted",
-      })
-
-      if (insertError) {
-        // If unique constraint violation, try update instead
-        if (insertError.code === "23505") {
-          const { error: updateError } = await supabase
-            .from("participants")
-            .update({ status: "waitlisted", display_name: trimmedName, contact_phone: trimmedPhone })
-            .eq("session_id", session.id)
-            .eq("guest_key", guestKey)
-
-          if (updateError) {
-            return { ok: false, error: updateError.message }
-          }
-        } else {
-          return { ok: false, error: insertError.message }
-        }
-      }
-
-      // Revalidate the session page
-      if (session.host_slug && publicCode) {
-        revalidatePath(`/${session.host_slug}/${publicCode}`)
-      }
-
-      return { ok: true }
-    } else {
-      // Waitlist disabled - block joining
-      return { ok: false, error: "Session is full", code: "CAPACITY_EXCEEDED" }
+    return {
+      ok: false,
+      error: error?.message || "An unexpected error occurred",
+      traceId: finalTraceId,
     }
   }
-
-  // Session has capacity - join normally
-  const { error: insertError } = await supabase.from("participants").insert({
-    session_id: session.id,
-    display_name: trimmedName,
-    contact_phone: trimmedPhone,
-    guest_key: guestKey,
-    status: "confirmed",
-  })
-
-  if (insertError) {
-    // If unique constraint violation (shouldn't happen due to check above, but handle gracefully)
-    if (insertError.code === "23505") {
-      // Try update instead
-      const { error: updateError } = await supabase
-        .from("participants")
-        .update({ status: "confirmed", display_name: trimmedName, contact_phone: trimmedPhone })
-        .eq("session_id", session.id)
-        .eq("guest_key", guestKey)
-
-      if (updateError) {
-        return { ok: false, error: updateError.message }
-      }
-    } else {
-      return { ok: false, error: insertError.message }
-    }
-  }
-
-  // Revalidate the session page using the hostSlug/code format
-  if (session.host_slug && publicCode) {
-    revalidatePath(`/${session.host_slug}/${publicCode}`)
-  }
-
-  return { ok: true }
 }
 
 /**

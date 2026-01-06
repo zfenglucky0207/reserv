@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 14, "column": 0}, "map": {"version":3,"sources":["file:///Users/zfeng/Documents/reserv/ui/app/auth/signin/page.tsx"],"sourcesContent":["import { SignInForm } from \"./form\";\n\nexport default function SignInPage() {\n  return (\n    <div className=\"flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-900 to-slate-950 p-6 md:p-10\">\n      <div className=\"w-full max-w-md\">\n        <SignInForm />\n      </div>\n    </div>\n  );\n}\n\n"],"names":[],"mappings":";;;;;;;;;;;;AAEe,SAAS;IACtB,qBACE,8OAAC;QAAI,WAAU;kBACb,cAAA,8OAAC;YAAI,WAAU;sBACb,cAAA,8OAAC;;;;;;;;;;;;;;;AAIT"}}]
-}
