@@ -382,6 +382,8 @@ export function SessionInvite({
   waitlist = [],
   publicCode,
   hostSlug,
+  hasStarted = false,
+  onMakePaymentClick,
   payingForParticipantId = null,
   payingForParticipantName = null,
   isFull = false,
@@ -3435,7 +3437,7 @@ export function SessionInvite({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.5 }}
             >
-              <Card className={`${glassCard} p-6`}>
+              <Card id="payment-proof-section" className={`${glassCard} p-6`}>
                 <h2 className={`text-lg font-semibold ${strongText} mb-2`}>Upload payment proof</h2>
                 {proofSubmitted ? (
                   <div className="text-center py-6">
@@ -4128,6 +4130,27 @@ export function SessionInvite({
                   <p className="text-xs text-white/60 leading-relaxed">
                     You can change your response anytime.
                   </p>
+                  
+                  {/* Payment button - show when session has started */}
+                  {hasStarted && onMakePaymentClick && (
+                    <Button
+                      onClick={(e) => {
+                        if (isPreviewMode) {
+                          e.preventDefault()
+                          return
+                        }
+                        onMakePaymentClick()
+                      }}
+                      disabled={isPreviewMode}
+                      className={cn(
+                        "mt-3 w-full bg-white hover:bg-white/90 text-black font-medium rounded-full h-10",
+                        isPreviewMode && "opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      Make Payment
+                    </Button>
+                  )}
                 </div>
               </div>
             ) : rsvpState === "waitlisted" ? (
@@ -4177,46 +4200,110 @@ export function SessionInvite({
             ) : (
               /* Default state - show swipe slider (rsvpState is "none") */
               <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
-                <div className="flex justify-center items-center gap-2 w-full">
-                  {/* Swipe to Join Slider */}
-                  <SwipeToJoinSlider
-                    onJoin={() => {
-                      // Log waitlist intent when session is full
-                      if (isFull && publicCode) {
-                        console.log("[waitlist] session full → user attempting waitlist join", {
-                          publicCode,
-                          capacity: eventCapacity,
-                          joinedCount,
-                        })
-                      }
-                      // Call the original join handler
-                      if (onJoinClick) {
-                        onJoinClick()
-                      }
-                    }}
-                    disabled={isPreviewMode}
-                    uiMode={uiMode}
-                    isPreviewMode={isPreviewMode}
-                    label={isFull ? "Join waitlist" : "Join session"}
-                    isJoined={String(rsvpState) === "joined"}
-                  />
+                {hasStarted && onMakePaymentClick ? (
+                  /* Session has started - show payment button */
+                  <div className="flex flex-col gap-3 w-full">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 flex-1">
+                        {/* Small indicator that session has started */}
+                        <div className={cn(
+                          "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium",
+                          uiMode === "dark"
+                            ? "bg-amber-500/20 text-amber-200 border border-amber-500/30"
+                            : "bg-amber-500/10 text-amber-700 border border-amber-500/30"
+                        )}>
+                          <div className={cn(
+                            "h-1.5 w-1.5 rounded-full",
+                            uiMode === "dark" ? "bg-amber-400" : "bg-amber-600"
+                          )} />
+                          Session Started
+                        </div>
+                      </div>
                       {actualSessionId && !demoMode && (
                         <Button
                           onClick={handleShareInviteLink}
                           variant="ghost"
                           size="icon"
                           className={cn(
-                            "h-12 w-12 rounded-full",
+                            "h-8 w-8 rounded-full shrink-0",
                             uiMode === "dark"
                               ? "text-white hover:bg-white/10"
                               : "text-black hover:bg-black/10"
                           )}
                           aria-label="Share invite link"
                         >
-                          <Share2 className="h-5 w-5" />
+                          <Share2 className="h-4 w-4" />
                         </Button>
-                  )}
-                </div>
+                      )}
+                    </div>
+                    <Button
+                      onClick={(e) => {
+                        if (isPreviewMode) {
+                          e.preventDefault()
+                          return
+                        }
+                        // Open payment dialog
+                        if (onMakePaymentClick) {
+                          onMakePaymentClick()
+                        }
+                      }}
+                      disabled={isPreviewMode}
+                      className={cn(
+                        "w-full bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-10",
+                        isPreviewMode && "opacity-50 cursor-not-allowed"
+                      )}
+                    >
+                      <Upload className="mr-2 h-4 w-4" />
+                      Upload Payment Proof
+                    </Button>
+                  </div>
+                ) : (
+                  /* Session hasn't started - show join slider */
+                  <div className="flex justify-center items-center gap-2 w-full">
+                    {/* Swipe to Join Slider */}
+                    <SwipeToJoinSlider
+                      onJoin={() => {
+                        // Block join if session has started
+                        if (hasStarted) {
+                          return
+                        }
+                        // Log waitlist intent when session is full
+                        if (isFull && publicCode) {
+                          console.log("[waitlist] session full → user attempting waitlist join", {
+                            publicCode,
+                            capacity: eventCapacity,
+                            joinedCount,
+                          })
+                        }
+                        // Call the original join handler
+                        if (onJoinClick) {
+                          onJoinClick()
+                        }
+                      }}
+                      disabled={isPreviewMode || hasStarted}
+                      uiMode={uiMode}
+                      isPreviewMode={isPreviewMode}
+                      label={hasStarted ? "Session Started" : isFull ? "Join waitlist" : "Join session"}
+                      isJoined={String(rsvpState) === "joined"}
+                    />
+                    {actualSessionId && !demoMode && (
+                      <Button
+                        onClick={handleShareInviteLink}
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          "h-12 w-12 rounded-full",
+                          uiMode === "dark"
+                            ? "text-white hover:bg-white/10"
+                            : "text-black hover:bg-black/10"
+                        )}
+                        aria-label="Share invite link"
+                      >
+                        <Share2 className="h-5 w-5" />
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>

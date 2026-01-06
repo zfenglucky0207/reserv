@@ -183,7 +183,7 @@ async function getSessionByPublicCode(
 ): Promise<{ session: Session } | { error: string }> {
   const { data, error } = await supabase
     .from("sessions")
-    .select("id, status, capacity, public_code, host_id, host_slug, waitlist_enabled")
+    .select("id, status, capacity, public_code, host_id, host_slug, waitlist_enabled, start_at")
     .eq("public_code", publicCode)
     .maybeSingle()
 
@@ -201,6 +201,13 @@ async function getSessionByPublicCode(
 
   if (data.status !== "open") {
     return { error: `Session is ${data.status}. Only open sessions can be joined.` }
+  }
+
+  // Check if session has started - prevent joining after session starts
+  const now = new Date()
+  const sessionStart = new Date(data.start_at)
+  if (now >= sessionStart) {
+    return { error: "Session has already started. Joining is no longer available." }
   }
 
   return { session: data as Session }

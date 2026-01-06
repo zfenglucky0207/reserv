@@ -424,6 +424,122 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const sessionStart = parseISO(session.start_at)
   const hasStarted = now >= sessionStart
 
+  // Memoize stable values for dependency array
+  const hasStoredParticipantInfo = !!storedParticipantInfo
+  const userId = authUser?.id || null
+  const userEmail = authUser?.email || null
+
+  // Memoize current participant ID for authenticated users
+  const currentParticipantId = useMemo(() => {
+    if (!isAuthenticated || !userId) return null
+    const participant = participants.find(p => {
+      // Try to match by user_id if available
+      if ((p as any).user_id === userId) return true
+      // Fallback: match by email if available
+      if (userEmail && (p as any).contact_email === userEmail) return true
+      return false
+    })
+    return participant?.id || null
+  }, [isAuthenticated, userId, userEmail, participants])
+
+  // Auto-open payment dialog when session starts
+  // Anyone can pay for anyone - no need to be joined
+  useEffect(() => {
+    // Debug logs
+    console.log("[Payment Dialog] Auto-open check:", {
+      hasStarted,
+      rsvpState,
+      makePaymentDialogOpen,
+      publicCode: !!publicCode,
+      isAuthenticated,
+      userId,
+    })
+
+    // Early returns - only check if session has started
+    if (!hasStarted) {
+      console.log("[Payment Dialog] Session not started yet")
+      return
+    }
+    if (!publicCode) {
+      console.log("[Payment Dialog] No public code")
+      return
+    }
+    if (makePaymentDialogOpen) {
+      console.log("[Payment Dialog] Dialog already open")
+      return // Already open
+    }
+
+    // Fetch unpaid participants and open dialog for everyone
+    // Anyone can pay for anyone - no join requirement
+    const fetchAndOpenDialog = async () => {
+      setIsLoadingUnpaid(true)
+      try {
+        const result = await getUnpaidParticipants(publicCode)
+        if (result.ok) {
+          setUnpaidParticipants(result.participants)
+          
+          console.log("[Payment Dialog] Fetched unpaid participants:", result.participants.length)
+
+          // Determine default participant to select
+          let defaultParticipantId: string | null = null
+
+          // For authenticated users: pre-select their participant if they have one
+          if (isAuthenticated && userId && currentParticipantId) {
+            if (result.participants.some(p => p.id === currentParticipantId)) {
+              defaultParticipantId = currentParticipantId
+              const participant = participants.find(p => p.id === currentParticipantId)
+              if (participant) {
+                setPayingForParticipantName(participant.display_name)
+              }
+            }
+          }
+
+          // If no default yet, try to get guest participant ID
+          if (!defaultParticipantId) {
+            const guestParticipantId = await getCurrentParticipantId()
+            if (guestParticipantId && result.participants.some(p => p.id === guestParticipantId)) {
+              defaultParticipantId = guestParticipantId
+            } else if (result.participants.length > 0) {
+              // Default to first unpaid participant if available
+              defaultParticipantId = result.participants[0]?.id || null
+            }
+          }
+
+          setSelectedParticipantId(defaultParticipantId)
+
+          // 🚨 FORCE OPEN PAYMENT DIALOG - anyone can pay when session starts
+          console.log("[Payment Dialog] Opening dialog...", {
+            unpaidCount: result.participants.length,
+            selectedId: defaultParticipantId
+          })
+          setMakePaymentDialogOpen(true)
+        } else {
+          console.error("[Payment Dialog] Failed to fetch unpaid participants:", result.error)
+          // Still open dialog even if fetch fails - let user see the error in dialog
+          setUnpaidParticipants([])
+          setSelectedParticipantId(null)
+          setMakePaymentDialogOpen(true)
+        }
+      } catch (error: any) {
+        console.error("[Payment Dialog] Error fetching unpaid participants:", error)
+        // Still open dialog even on error - let user see the error in dialog
+        setUnpaidParticipants([])
+        setSelectedParticipantId(null)
+        setMakePaymentDialogOpen(true)
+      } finally {
+        setIsLoadingUnpaid(false)
+      }
+    }
+
+    // Small delay to ensure UI is ready
+    const timer = setTimeout(() => {
+      fetchAndOpenDialog()
+    }, 500)
+    
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasStarted, makePaymentDialogOpen, publicCode, isAuthenticated, userId, userEmail, currentParticipantId])
+
   // Find current user's participant (if logged in)
   // Note: This requires a migration to add user_id to participants table
   // For now, we'll use guest_key as fallback via getCurrentParticipantId()
@@ -469,6 +585,22 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
     setLastJoinError(null)
     
     try {
+      // Check if session has started - prevent joining after session starts
+      if (hasStarted) {
+        const error = "Session has already started. Joining is no longer available."
+        logWarn("join_blocked_session_started", withTrace({
+          reason: "session_started",
+          stage: "validation",
+        }, traceId))
+        setLastJoinError(error)
+        toast({
+          title: "Session Started",
+          description: error,
+          variant: "destructive",
+        })
+        return
+      }
+
       if (!publicCode) {
         const error = "Session is not published."
         logError("join_failed_client", withTrace({ 
