@@ -1,35 +1,50 @@
 import { NextResponse } from "next/server"
-import { createClient, createAdminClient } from "@/lib/supabase/server/server"
+import { createAnonymousClient, createAdminClient } from "@/lib/supabase/server/server"
 import { log, logInfo, logWarn, logError, withTrace, debugEnabled } from "@/lib/logger"
 
 // Explicitly use Node.js runtime (not Edge) for Supabase compatibility
 export const runtime = "nodejs"
 
-export async function POST(req: Request) {
-  const traceId = req.headers.get("x-trace-id") ?? `join_${Date.now()}`
-  const startedAt = Date.now()
-  
-  // Log request start
-  const origin = req.headers.get("origin") || "unknown"
-  const userAgent = req.headers.get("user-agent") || "unknown"
-  const hasAuthHeader = !!req.headers.get("authorization")
-  
-  logInfo("join_api_start", withTrace({
-    method: req.method,
-    url: req.url,
-    origin,
-    userAgent: userAgent.substring(0, 100), // Truncate for logs
-    hasAuthHeader,
-  }, traceId))
+// Force dynamic rendering to avoid static generation issues
+export const dynamic = "force-dynamic"
 
-  // Ensure we always return JSON, never HTML
-  const jsonResponse = (data: any, status: number = 200) => {
-    return NextResponse.json(data, {
-      status,
-      headers: {
-        "Content-Type": "application/json",
-      },
-    })
+// Disable static generation for this route
+export const revalidate = 0
+
+// Ensure we always return JSON, never HTML
+const jsonResponse = (data: any, status: number = 200) => {
+  return NextResponse.json(data, {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+    },
+  })
+}
+
+export async function POST(req: Request) {
+  // Initialize traceId early to use in error handling
+  let traceId = `join_${Date.now()}`
+  let startedAt = Date.now()
+  
+  try {
+    traceId = req.headers.get("x-trace-id") ?? traceId
+    startedAt = Date.now()
+    
+    // Log request start
+    const origin = req.headers.get("origin") || "unknown"
+    const userAgent = req.headers.get("user-agent") || "unknown"
+    const hasAuthHeader = !!req.headers.get("authorization")
+    
+    logInfo("join_api_start", withTrace({
+      method: req.method,
+      url: req.url,
+      origin,
+      userAgent: userAgent.substring(0, 100), // Truncate for logs
+      hasAuthHeader,
+    }, traceId))
+  } catch (headerError: any) {
+    console.error("[join] Error reading headers:", headerError)
+    // Continue with default traceId - don't throw, just log
   }
 
   try {
@@ -95,14 +110,21 @@ export async function POST(req: Request) {
       )
     }
     
+    // Use anonymous client for public operations (doesn't try to refresh sessions)
+    // This avoids "Invalid Refresh Token" errors when cookies contain stale tokens
     // Use admin client for inserts to bypass RLS (trusted server-side operation)
-    // We still validate session access using the regular client
     let supabase
     let adminSupabase
     
     try {
-      supabase = await createClient()
+      // Use anonymous client - doesn't attempt auth, avoids refresh token errors
+      supabase = await createAnonymousClient()
+      log("info", "join_anonymous_client_created", {
+        traceId,
+        note: "Using anonymous client for public join endpoint",
+      })
     } catch (clientError: any) {
+      // This should rarely happen, but handle it gracefully
       log("error", "join_supabase_client_creation_failed", {
         traceId,
         error: clientError?.message,
@@ -902,6 +924,16 @@ export async function POST(req: Request) {
       200
     )
   } catch (e: any) {
+    // Log the full error for debugging
+    console.error("[join] Unhandled error:", {
+      traceId,
+      message: e?.message,
+      stack: e?.stack,
+      name: e?.name,
+      cause: e?.cause,
+      error: e,
+    })
+    
     log("error", "join_unhandled", { 
       traceId, 
       message: e?.message, 
@@ -910,15 +942,33 @@ export async function POST(req: Request) {
       cause: e?.cause,
     })
     
-    // Always return JSON, never HTML
-    return jsonResponse(
-      { 
-        error: "Internal error", 
-        detail: e?.message || "An unexpected error occurred",
-        traceId 
-      },
-      500
-    )
+    // Always return JSON, never HTML - use try-catch to ensure we never throw
+    try {
+      return jsonResponse(
+        { 
+          error: "Internal error", 
+          detail: e?.message || "An unexpected error occurred",
+          traceId 
+        },
+        500
+      )
+    } catch (responseError: any) {
+      // If even jsonResponse fails, return a plain JSON response
+      console.error("[join] Failed to create JSON response:", responseError)
+      return new NextResponse(
+        JSON.stringify({ 
+          error: "Internal error", 
+          detail: "Failed to process request",
+          traceId 
+        }),
+        {
+          status: 500,
+          headers: {
+            "Content-Type": "application/json",
+          },
+        }
+      )
+    }
   }
 }
 

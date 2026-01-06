@@ -28,6 +28,28 @@ export async function createClient() {
   );
 }
 
+/**
+ * Create an anonymous Supabase client that doesn't attempt to refresh sessions.
+ * Use this for public endpoints where user authentication is not required.
+ * This avoids "Invalid Refresh Token" errors when cookies contain stale tokens.
+ */
+export async function createAnonymousClient() {
+  return createServerClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    {
+      cookies: {
+        getAll() {
+          return []; // Return empty cookies - no auth attempted
+        },
+        setAll() {
+          // No-op - don't set any cookies
+        },
+      },
+    }
+  );
+}
+
 export function createAdminClient() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY

@@ -12,8 +12,7 @@ import { DebugPanel } from "@/components/debug-panel"
 import { useAuth } from "@/lib/hooks/use-auth"
 import { useToast } from "@/hooks/use-toast"
 import { format, parseISO } from "date-fns"
-import { ArrowLeft, Check, X } from "lucide-react"
-import { motion, AnimatePresence } from "framer-motion"
+import { ArrowLeft, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { getOrCreateGuestKey, getGuestKey } from "@/lib/guest-key"
@@ -135,7 +134,6 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const [isLoadingRSVP, setIsLoadingRSVP] = useState(true)
   const [storedParticipantInfo, setStoredParticipantInfo] = useState<{ name: string; phone: string | null } | null>(null)
   const [guestKey, setGuestKey] = useState<string | null>(null)
-  const [showSuccessMessage, setShowSuccessMessage] = useState(false)
   const [spotsLeft, setSpotsLeft] = useState<number | null>(null)
   
   // Local state for participants (can be updated optimistically)
@@ -570,9 +568,6 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         const remaining = capacity ? Math.max(0, capacity - currentCount) : null
         setSpotsLeft(remaining)
         
-        // Show success message (persistent card, no toast popup)
-        setShowSuccessMessage(true)
-        
         // Refetch participants from client (without router.refresh or page reload)
         // This ensures we have the latest data without a full page refresh
         const refetchParticipants = async () => {
@@ -625,11 +620,6 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         setTimeout(() => {
           refetchParticipants()
         }, 500)
-        
-        // Auto-hide success message after 3 seconds
-        setTimeout(() => {
-          setShowSuccessMessage(false)
-        }, 3000)
       } else if (res.ok && res.status !== 200) {
         // Unexpected: res.ok but not 200
         log("warn", "join_unexpected_status", { 
@@ -1110,70 +1100,6 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         </DialogContent>
       </Dialog>
 
-      {/* Premium Success Message */}
-      <AnimatePresence>
-        {showSuccessMessage && (
-          <motion.div
-            initial={{ y: 100, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 100, opacity: 0 }}
-            transition={{ type: "spring", damping: 25, stiffness: 200 }}
-            className="fixed bottom-0 left-0 right-0 z-50 pb-safe"
-          >
-            <div className="mx-auto max-w-md px-4 pb-4">
-              <div className={cn(
-                "rounded-2xl p-6 shadow-2xl border backdrop-blur-xl",
-                uiMode === "dark"
-                  ? "bg-gradient-to-br from-emerald-500/20 to-lime-500/20 border-emerald-400/30 text-white"
-                  : "bg-gradient-to-br from-emerald-50 to-lime-50 border-emerald-300/50 text-black"
-              )}>
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className={cn(
-                      "w-12 h-12 rounded-full flex items-center justify-center",
-                      uiMode === "dark"
-                        ? "bg-emerald-500/30"
-                        : "bg-emerald-500"
-                    )}>
-                      <Check className={cn(
-                        "w-6 h-6",
-                        uiMode === "dark" ? "text-white" : "text-white"
-                      )} />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-bold">You're in ✅</h3>
-                      <p className={cn(
-                        "text-sm mt-1",
-                        uiMode === "dark" ? "text-white/80" : "text-black/70"
-                      )}>
-                        See you on court. Your name is now visible to the group.
-                      </p>
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setShowSuccessMessage(false)}
-                    className={cn(
-                      "p-1 rounded-full hover:bg-black/10 transition-colors",
-                      uiMode === "dark" ? "text-white/60 hover:text-white" : "text-black/60 hover:text-black"
-                    )}
-                    aria-label="Close"
-                  >
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
-                {spotsLeft !== null && (
-                  <div className={cn(
-                    "text-sm font-medium",
-                    uiMode === "dark" ? "text-white/70" : "text-black/70"
-                  )}>
-                    Spots left: {spotsLeft}
-                  </div>
-                )}
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </>
   )
 }
