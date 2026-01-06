@@ -1,9 +1,17 @@
-import { type NextRequest } from "next/server";
+import { type NextRequest, NextResponse } from "next/server";
 
 import { updateSession } from "@/lib/supabase/server/middleware";
 
-export async function proxy(request: NextRequest) {
-  return await updateSession(request);
+export async function proxy(req: NextRequest) {
+  const { pathname } = req.nextUrl
+
+  // ✅ ALWAYS allow API routes through untouched
+  if (pathname.startsWith("/api/")) {
+    return NextResponse.next()
+  }
+
+  // 👇 everything else can be proxied
+  return await updateSession(req);
 }
 
 export const config = {
