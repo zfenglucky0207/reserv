@@ -17,7 +17,7 @@ import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { getOrCreateGuestKey, getGuestKey } from "@/lib/guest-key"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Label } from "@/components/ui/label"
 
 interface Participant {
@@ -173,6 +173,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const [rsvpState, setRsvpState] = useState<"none" | "joined" | "waitlisted">("none")
   const [isLoadingRSVP, setIsLoadingRSVP] = useState(true)
   const [storedParticipantInfo, setStoredParticipantInfo] = useState<{ name: string; phone: string | null } | null>(null)
+  const [currentParticipantId, setCurrentParticipantId] = useState<string | null>(null)
   const [guestKey, setGuestKey] = useState<string | null>(null)
   const [spotsLeft, setSpotsLeft] = useState<number | null>(null)
   
@@ -264,9 +265,9 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
     }
   }, [initialParticipants, initialWaitlist, participants, waitlist]) // Include full arrays to detect actual changes
   const [makePaymentDialogOpen, setMakePaymentDialogOpen] = useState(false)
-  const [selectedParticipantId, setSelectedParticipantId] = useState<string | null>(null)
-  const [payingForParticipantId, setPayingForParticipantId] = useState<string | null>(null)
-  const [payingForParticipantName, setPayingForParticipantName] = useState<string | null>(null)
+  const [selectedParticipantIds, setSelectedParticipantIds] = useState<string[]>([])
+  const [payingForParticipantIds, setPayingForParticipantIds] = useState<string[]>([])
+  const [payingForParticipantNames, setPayingForParticipantNames] = useState<string[]>([])
   const [unpaidParticipants, setUnpaidParticipants] = useState<Array<{ id: string; display_name: string }>>([])
   const [isLoadingUnpaid, setIsLoadingUnpaid] = useState(false)
   
@@ -366,6 +367,11 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         )
 
         if (result.ok) {
+          // Store participantId if available
+          if (result.participantId) {
+            setCurrentParticipantId(result.participantId)
+          }
+          
           // Only set "joined" if status is explicitly "confirmed"
           if (result.status === "confirmed") {
             setRsvpState("joined")
@@ -381,11 +387,13 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
             // status is null, "cancelled", or anything else -> treat as "none"
             setRsvpState("none")
             setStoredParticipantInfo(null)
+            setCurrentParticipantId(null)
           }
         } else {
           // Error or not found -> default to "none"
           setRsvpState("none")
           setStoredParticipantInfo(null)
+          setCurrentParticipantId(null)
         }
       } catch (error) {
         console.error("[PublicSessionView] Error loading RSVP status:", error)
@@ -424,121 +432,128 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const sessionStart = parseISO(session.start_at)
   const hasStarted = now >= sessionStart
 
-  // Memoize stable values for dependency array
-  const hasStoredParticipantInfo = !!storedParticipantInfo
-  const userId = authUser?.id || null
-  const userEmail = authUser?.email || null
+  // Track if we've already attempted to open the payment dialog for this session start
+  const hasAttemptedPaymentDialogRef = useRef(false)
 
-  // Memoize current participant ID for authenticated users
-  const currentParticipantId = useMemo(() => {
-    if (!isAuthenticated || !userId) return null
-    const participant = participants.find(p => {
-      // Try to match by user_id if available
-      if ((p as any).user_id === userId) return true
-      // Fallback: match by email if available
-      if (userEmail && (p as any).contact_email === userEmail) return true
-      return false
-    })
-    return participant?.id || null
-  }, [isAuthenticated, userId, userEmail, participants])
-
-  // Auto-open payment dialog when session starts
-  // Anyone can pay for anyone - no need to be joined
+  // Auto-open payment dialog when session starts and user has joined with unpaid participants
   useEffect(() => {
-    // Debug logs
-    console.log("[Payment Dialog] Auto-open check:", {
+    console.log("[payment] useEffect triggered", {
+      hasSession: !!session,
+      hasPublicCode: !!publicCode,
       hasStarted,
-      rsvpState,
-      makePaymentDialogOpen,
-      publicCode: !!publicCode,
-      isAuthenticated,
-      userId,
+      hasStoredParticipantInfo: !!storedParticipantInfo,
+      storedParticipantName: storedParticipantInfo?.name,
+      unpaidCount: unpaidParticipants.length,
+      isLoadingUnpaid,
+      hasAttempted: hasAttemptedPaymentDialogRef.current,
+      dialogOpen: makePaymentDialogOpen,
     })
 
-    // Early returns - only check if session has started
-    if (!hasStarted) {
-      console.log("[Payment Dialog] Session not started yet")
+    if (!session || !publicCode) {
+      console.log("[payment] Early return: missing session or publicCode")
       return
-    }
-    if (!publicCode) {
-      console.log("[Payment Dialog] No public code")
-      return
-    }
-    if (makePaymentDialogOpen) {
-      console.log("[Payment Dialog] Dialog already open")
-      return // Already open
     }
 
-    // Fetch unpaid participants and open dialog for everyone
-    // Anyone can pay for anyone - no join requirement
-    const fetchAndOpenDialog = async () => {
-      setIsLoadingUnpaid(true)
+    // Only care once the session starts (check start_at time)
+    if (!hasStarted) {
+      console.log("[payment] Early return: session has not started yet")
+      // Reset attempt flag when session hasn't started yet
+      hasAttemptedPaymentDialogRef.current = false
+      return
+    }
+
+    // Note: Users don't need to have joined to make payment
+    // They can select their participant in the payment dialog
+
+    // If dialog is already open, don't try again
+    if (makePaymentDialogOpen) {
+      console.log("[payment] Dialog already open, skipping")
+      return
+    }
+
+    // Load unpaid participants if not already loaded
+    const loadUnpaidParticipants = async () => {
+      if (isLoadingUnpaid) {
+        console.log("[payment] Already loading unpaid participants, skipping")
+        return // Already loading
+      }
+      
+      console.log("[payment] Loading unpaid participants...")
       try {
+        setIsLoadingUnpaid(true)
         const result = await getUnpaidParticipants(publicCode)
+        console.log("[payment] getUnpaidParticipants result", {
+          ok: result.ok,
+          participantCount: result.ok ? result.participants.length : 0,
+          error: !result.ok ? result.error : undefined,
+        })
+        
         if (result.ok) {
           setUnpaidParticipants(result.participants)
           
-          console.log("[Payment Dialog] Fetched unpaid participants:", result.participants.length)
-
-          // Determine default participant to select
-          let defaultParticipantId: string | null = null
-
-          // For authenticated users: pre-select their participant if they have one
-          if (isAuthenticated && userId && currentParticipantId) {
-            if (result.participants.some(p => p.id === currentParticipantId)) {
-              defaultParticipantId = currentParticipantId
-              const participant = participants.find(p => p.id === currentParticipantId)
-              if (participant) {
-                setPayingForParticipantName(participant.display_name)
-              }
-            }
+          // If there are unpaid participants, open the dialog
+          // Users can select their participant in the dialog even if they haven't "joined" yet
+          if (result.participants.length > 0) {
+            // Try to get current participant ID if user has joined
+            const currentParticipantId = storedParticipantInfo 
+              ? await getCurrentParticipantId()
+              : null
+            
+            console.log("[payment] Auto-opening payment dialog (after load)", {
+              hasStarted,
+              hasStoredParticipantInfo: !!storedParticipantInfo,
+              unpaidCount: result.participants.length,
+              participantName: storedParticipantInfo?.name,
+              currentParticipantId,
+            })
+            hasAttemptedPaymentDialogRef.current = true
+            setMakePaymentDialogOpen(true)
+          } else {
+            console.log("[payment] Not opening dialog: no unpaid participants", {
+              unpaidCount: result.participants.length,
+            })
+            hasAttemptedPaymentDialogRef.current = true
           }
-
-          // If no default yet, try to get guest participant ID
-          if (!defaultParticipantId) {
-            const guestParticipantId = await getCurrentParticipantId()
-            if (guestParticipantId && result.participants.some(p => p.id === guestParticipantId)) {
-              defaultParticipantId = guestParticipantId
-            } else if (result.participants.length > 0) {
-              // Default to first unpaid participant if available
-              defaultParticipantId = result.participants[0]?.id || null
-            }
-          }
-
-          setSelectedParticipantId(defaultParticipantId)
-
-          // 🚨 FORCE OPEN PAYMENT DIALOG - anyone can pay when session starts
-          console.log("[Payment Dialog] Opening dialog...", {
-            unpaidCount: result.participants.length,
-            selectedId: defaultParticipantId
-          })
-          setMakePaymentDialogOpen(true)
         } else {
-          console.error("[Payment Dialog] Failed to fetch unpaid participants:", result.error)
-          // Still open dialog even if fetch fails - let user see the error in dialog
-          setUnpaidParticipants([])
-          setSelectedParticipantId(null)
-          setMakePaymentDialogOpen(true)
+          console.error("[payment] Failed to get unpaid participants", result.error)
+          hasAttemptedPaymentDialogRef.current = true
         }
-      } catch (error: any) {
-        console.error("[Payment Dialog] Error fetching unpaid participants:", error)
-        // Still open dialog even on error - let user see the error in dialog
-        setUnpaidParticipants([])
-        setSelectedParticipantId(null)
-        setMakePaymentDialogOpen(true)
+      } catch (error) {
+        console.error("[payment] Failed to load unpaid participants", error)
+        hasAttemptedPaymentDialogRef.current = true
       } finally {
         setIsLoadingUnpaid(false)
       }
     }
 
-    // Small delay to ensure UI is ready
-    const timer = setTimeout(() => {
-      fetchAndOpenDialog()
-    }, 500)
-    
-    return () => clearTimeout(timer)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasStarted, makePaymentDialogOpen, publicCode, isAuthenticated, userId, userEmail, currentParticipantId])
+    // Only load if we haven't attempted yet or if we need to refresh
+    if (!hasAttemptedPaymentDialogRef.current) {
+      if (unpaidParticipants.length === 0 && !isLoadingUnpaid) {
+        console.log("[payment] Triggering loadUnpaidParticipants (first attempt)")
+        loadUnpaidParticipants()
+      } else if (unpaidParticipants.length > 0) {
+        // Already have data, just open the dialog
+        console.log("[payment] Auto-opening payment dialog (using cached data)", {
+          hasStarted,
+          hasStoredParticipantInfo: !!storedParticipantInfo,
+          unpaidCount: unpaidParticipants.length,
+          participantName: storedParticipantInfo?.name,
+        })
+        hasAttemptedPaymentDialogRef.current = true
+        setMakePaymentDialogOpen(true)
+      }
+    } else {
+      console.log("[payment] Already attempted to open dialog, skipping")
+    }
+  }, [
+    hasStarted,
+    storedParticipantInfo?.name, // Use name for stability
+    unpaidParticipants.length,
+    isLoadingUnpaid,
+    publicCode,
+    session?.id,
+    makePaymentDialogOpen, // Include to prevent re-opening if already open
+  ])
 
   // Find current user's participant (if logged in)
   // Note: This requires a migration to add user_id to participants table
@@ -571,9 +586,9 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const demoParticipants = useMemo(() => {
     const confirmed = participants.filter((p: any) => p.status === "confirmed" || !p.status)
     return confirmed.map((p) => ({
-      name: p.display_name,
-      avatar: null,
-    }))
+    name: p.display_name,
+    avatar: null,
+  }))
   }, [participants])
 
   // Sync UI mode from SessionInvite if needed (it manages its own state)
@@ -688,18 +703,18 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
             variant: "destructive",
           })
         } else if (errorMessage.includes("not found") || errorMessage.includes("Session not found")) {
-          toast({
+            toast({
             title: "Session not found",
             description: "Please check the invite link and try again.",
-            variant: "destructive",
-          })
-        } else {
-          toast({
-            title: "Failed to join",
+              variant: "destructive",
+            })
+          } else {
+            toast({
+              title: "Failed to join",
             description: errorMessage,
-            variant: "destructive",
-          })
-        }
+              variant: "destructive",
+            })
+          }
         return
       }
 
@@ -942,59 +957,12 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       return
     }
 
-    // Logged-in user: skip dialog, find their participant and scroll directly
-    if (isAuthenticated && authUser?.id) {
-      // First try to find by user_id (after migration)
-      let participant = myParticipant
+    // Logged-in user: show dialog to choose participant (same as guests)
+    // Users can pay for any participant, they don't need to have joined first
+    // If they want to pay, they can select their participant in the dialog
 
-      // If not found by user_id, try to get via guest key (fallback for existing participants)
-      if (!participant) {
-        const currentParticipantId = await getCurrentParticipantId()
-        if (currentParticipantId) {
-          participant = participants.find(p => p.id === currentParticipantId) || null
-        }
-      }
-
-      if (!participant) {
-        toast({
-          title: "Join first",
-          description: "Please join the session before making payment.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      // Set paying participant and scroll
-      setPayingForParticipantId(participant.id)
-      setPayingForParticipantName(participant.display_name)
-      
-      logInfo("payment_user_selected", withTrace({
-        participantId: participant.id,
-        displayName: participant.display_name,
-        action: "auto_selected_logged_in",
-      }, traceId))
-      
-      // Scroll to upload section
-      setTimeout(() => {
-        const paymentSection = document.querySelector('[data-payment-section]')
-        if (paymentSection) {
-          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
-          logInfo("scroll_to_upload_section", withTrace({
-            targetId: paymentSection.id || "payment-section",
-            action: "scroll",
-          }, traceId))
-        } else {
-          window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })
-          logWarn("scroll_to_upload_section", withTrace({
-            targetId: "not_found",
-            action: "fallback_scroll",
-          }, traceId))
-        }
-      }, 50)
-      return
-    }
-
-    // Guest user: show dialog to choose participant
+    // Show dialog to choose participant (for both logged-in users and guests)
+    // Users can pay for any participant without needing to join first
     setIsLoadingUnpaid(true)
     try {
       const result = await getUnpaidParticipants(publicCode)
@@ -1016,13 +984,13 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
           return
         }
 
-        // Get current participant ID to set as default
+        // Get current participant ID to set as default (pre-select it)
         const currentParticipantId = await getCurrentParticipantId()
         if (currentParticipantId && result.participants.some(p => p.id === currentParticipantId)) {
-          setSelectedParticipantId(currentParticipantId)
+          setSelectedParticipantIds([currentParticipantId])
         } else {
-          // Default to first unpaid participant
-          setSelectedParticipantId(result.participants[0]?.id || null)
+          // Default to first unpaid participant (pre-selected)
+          setSelectedParticipantIds(result.participants[0]?.id ? [result.participants[0].id] : [])
         }
 
         setMakePaymentDialogOpen(true)
@@ -1049,31 +1017,32 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
     }
   }
 
-  // Handle payment dialog continue - set paying for participant and scroll
+  // Handle payment dialog continue - set paying for participants and scroll
   const handlePaymentContinue = () => {
     const traceId = newTraceId("pay")
     
-    if (!selectedParticipantId) {
+    if (selectedParticipantIds.length === 0) {
       logError("payment_user_selection_missing", withTrace({
         stage: "validation",
       }, traceId))
       toast({
         title: "Error",
-        description: "Please select a participant to pay for.",
+        description: "Please select at least one participant to pay for.",
         variant: "destructive",
       })
       return
     }
 
-    // Find participant name
-    const selectedParticipant = unpaidParticipants.find(p => p.id === selectedParticipantId)
-    if (selectedParticipant) {
-      setPayingForParticipantId(selectedParticipantId)
-      setPayingForParticipantName(selectedParticipant.display_name)
+    // Find participant names for all selected IDs
+    const selectedParticipants = unpaidParticipants.filter(p => selectedParticipantIds.includes(p.id))
+    if (selectedParticipants.length > 0) {
+      setPayingForParticipantIds(selectedParticipantIds)
+      setPayingForParticipantNames(selectedParticipants.map(p => p.display_name))
       
-      logInfo("payment_user_selected", withTrace({
-        participantId: selectedParticipantId,
-        displayName: selectedParticipant.display_name,
+      logInfo("payment_users_selected", withTrace({
+        participantIds: selectedParticipantIds,
+        displayNames: selectedParticipants.map(p => p.display_name),
+        count: selectedParticipants.length,
       }, traceId))
     }
 
@@ -1157,11 +1126,12 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         publicCode={publicCode}
         hostSlug={urlHostSlug || session.host_slug || null}
         onMakePaymentClick={handleMakePaymentClick}
-        payingForParticipantId={payingForParticipantId}
-        payingForParticipantName={payingForParticipantName}
+        payingForParticipantId={payingForParticipantIds[0] || null} // For now, use first selected for payment submission
+        payingForParticipantNames={payingForParticipantNames}
         isFull={capacityState.isFull}
         joinedCount={capacityState.joinedCount}
         participantName={storedParticipantInfo?.name || null}
+        participantId={currentParticipantId || null}
       />
 
       {/* Login/Guest Dialog - shown first */}
@@ -1196,7 +1166,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
             <DialogDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
               {unpaidParticipants.length === 0
                 ? "Everyone's paid ✅"
-                : "Select which participant to pay for"}
+                : "Select which participant(s) to pay for"}
             </DialogDescription>
           </DialogHeader>
           {unpaidParticipants.length === 0 ? (
@@ -1221,48 +1191,67 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
           ) : (
             <>
               <div className="grid gap-4 py-4">
-                <div className="grid gap-2">
-                </div>
-                <div className="grid gap-2">
-                  <Select
-                    value={selectedParticipantId || ""}
-                    onValueChange={setSelectedParticipantId}
-                    disabled={isLoadingUnpaid}
-                  >
-                    <SelectTrigger
-                      className={cn(
-                        "w-full",
-                        uiMode === "dark"
-                          ? "bg-white/5 border-white/10 text-white"
-                          : "bg-black/5 border-black/10 text-black"
-                      )}
-                    >
-                      <SelectValue placeholder={isLoadingUnpaid ? "Loading..." : "Select participant"} />
-                    </SelectTrigger>
-                    <SelectContent
-                      className={cn(
-                        uiMode === "dark" ? "bg-slate-900 border-white/10" : "bg-white border-black/10"
-                      )}
-                    >
-                      {unpaidParticipants.map((participant) => (
-                        <SelectItem
-                          key={participant.id}
-                          value={participant.id}
+                <div className="grid gap-3 max-h-[300px] overflow-y-auto">
+                  {isLoadingUnpaid ? (
+                    <p className={cn("text-sm text-center py-4", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+                      Loading participants...
+                    </p>
+                  ) : (
+                    unpaidParticipants.map((participant) => (
+                      <div
+                        key={participant.id}
+                        className={cn(
+                          "flex items-center space-x-3 p-3 rounded-lg transition-colors",
+                          uiMode === "dark"
+                            ? "hover:bg-white/5"
+                            : "hover:bg-black/5"
+                        )}
+                      >
+                        <Checkbox
+                          id={`participant-${participant.id}`}
+                          checked={selectedParticipantIds.includes(participant.id)}
+                          onCheckedChange={(checked) => {
+                            if (checked) {
+                              setSelectedParticipantIds((prev) => [...prev, participant.id])
+                            } else {
+                              setSelectedParticipantIds((prev) => prev.filter((id) => id !== participant.id))
+                            }
+                          }}
                           className={cn(
-                            uiMode === "dark" ? "text-white focus:bg-white/10" : "text-black focus:bg-black/10"
+                            uiMode === "dark"
+                              ? "border-white/30 data-[state=checked]:bg-lime-500 data-[state=checked]:border-lime-500"
+                              : "border-black/30 data-[state=checked]:bg-lime-500 data-[state=checked]:border-lime-500"
+                          )}
+                        />
+                        <Label
+                          htmlFor={`participant-${participant.id}`}
+                          className={cn(
+                            "flex-1 cursor-pointer text-sm font-medium",
+                            uiMode === "dark" ? "text-white" : "text-black"
                           )}
                         >
                           {participant.display_name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                        </Label>
+                      </div>
+                    ))
+                  )}
                 </div>
+                {selectedParticipantIds.length > 0 && (
+                  <div className={cn(
+                    "text-xs px-2",
+                    uiMode === "dark" ? "text-white/60" : "text-black/60"
+                  )}>
+                    {selectedParticipantIds.length} participant{selectedParticipantIds.length !== 1 ? "s" : ""} selected
+                  </div>
+                )}
               </div>
               <div className="flex justify-end gap-2">
                 <Button
                   variant="outline"
-                  onClick={() => setMakePaymentDialogOpen(false)}
+                  onClick={() => {
+                    setMakePaymentDialogOpen(false)
+                    setSelectedParticipantIds([]) // Reset selection on cancel
+                  }}
                   className={cn(
                     uiMode === "dark"
                       ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
@@ -1273,10 +1262,10 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                 </Button>
                 <Button
                   onClick={handlePaymentContinue}
-                  disabled={!selectedParticipantId || isLoadingUnpaid}
-                  className="bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full"
+                  disabled={selectedParticipantIds.length === 0 || isLoadingUnpaid}
+                  className="bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  Continue
+                  Continue ({selectedParticipantIds.length})
                 </Button>
               </div>
             </>

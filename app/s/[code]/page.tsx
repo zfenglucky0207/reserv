@@ -1,29 +1,10 @@
-import { SessionInvite } from "@/components/session-invite"
+import { SharedSessionContent } from "./shared-session-content"
 import { createClient } from "@/lib/supabase/server/server"
 import { notFound } from "next/navigation"
 import { Suspense } from "react"
 
 // Force dynamic rendering to always fetch latest cover
 export const dynamic = "force-dynamic"
-
-async function SharedSessionContent({
-  sessionId,
-  session,
-}: {
-  sessionId: string
-  session: any
-}) {
-  // For shared/public view, show in preview mode only (not edit mode)
-  return (
-    <SessionInvite
-      sessionId={sessionId}
-      initialCoverUrl={session.cover_url || null}
-      initialSport={session.sport || null}
-      initialEditMode={false}
-      initialPreviewMode={true}
-    />
-  )
-}
 
 export default async function SharedSessionPage({
   params,

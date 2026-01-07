@@ -49,54 +49,14 @@ import { listDrafts, saveDraft, getDraft, deleteDraft, overwriteDraft } from "@/
 import { PublishShareSheet } from "@/components/publish-share-sheet"
 import { HostSessionAnalytics } from "@/components/host/host-session-analytics"
 import { Share2 } from "lucide-react"
-
-// Text shadow utilities for hero overlay text (preview + public invite only)
-const HERO_TITLE_SHADOW = "[text-shadow:0_2px_18px_rgba(0,0,0,0.65),0_1px_2px_rgba(0,0,0,0.35)]"
-const HERO_META_SHADOW = "[text-shadow:0_1px_10px_rgba(0,0,0,0.55)]"
-const HERO_ICON_SHADOW = "drop-shadow-[0_1px_10px_rgba(0,0,0,0.55)]"
-
-// Default cover background colors by sport (when no cover image is set)
-const DEFAULT_COVER_BG: Record<string, string> = {
-  Badminton: "#ECFCCB",   // light green (lime-100, matches badminton lime green theme)
-  Futsal: "#EAF2FF",      // light blue (matches futsal blue vibe)
-  Volleyball: "#F3F4F6",  // light gray (clean neutral)
-  Pickleball: "#FFF1E6",  // light orange/peach (matches pickleball orange vibe)
-}
-
-// Sport to cover image mapping
-const SPORT_COVER_MAP: Record<string, { cyberpunk: string; ghibli: string }> = {
-  Badminton: {
-    cyberpunk: "/cyberpunk/badminton.png",
-    ghibli: "/ghibli style/bird-badminton.png",
-  },
-  Pickleball: {
-    cyberpunk: "/cyberpunk/pickleball.png",
-    ghibli: "/ghibli style/bird-pickleball.png",
-  },
-  Volleyball: {
-    cyberpunk: "/cyberpunk/volleyball.png",
-    ghibli: "/ghibli style/bird-volleyball.png",
-  },
-  Futsal: {
-    cyberpunk: "/cyberpunk/futsal.png",
-    ghibli: "/ghibli style/bird-football.png",
-  },
-}
-
-// Sport to theme mapping
-const SPORT_THEME_MAP: Record<string, string> = {
-  Badminton: "badminton",
-  Pickleball: "pickleball",
-  Volleyball: "clean", // Using clean theme for volleyball
-  Futsal: "midnight", // Using midnight theme for futsal
-}
-
-const TITLE_FONTS = {
-  Classic: "font-sans",
-  Eclectic: "font-mono",
-  Fancy: "font-serif",
-  Literary: "font-serif italic",
-}
+import { HERO_TITLE_SHADOW, HERO_META_SHADOW, HERO_ICON_SHADOW, DEFAULT_COVER_BG, SPORT_COVER_MAP, SPORT_THEME_MAP, TITLE_FONTS } from "@/constants/session-invite-constants"
+import { formatCourtDisplay, getSportDisplayName, getCoverOptions, parseEventDate, formatEventDate, isValidGoogleMapsUrl, getValidGoogleMapsUrl, getMapEmbedSrc, isTitleValid, isDateValid, isLocationValid, isPriceValid, isCapacityValid, isHostValid } from "@/utils/session-invite-helpers"
+import { SwipeToJoinSlider } from "@/components/session/swipe-to-join-slider"
+import { SessionInviteHero } from "@/components/session/session-invite-hero"
+import { SessionInviteContent } from "@/components/session/session-invite-content"
+import { SessionInviteModals } from "@/components/session/session-invite-modals"
+import { SessionInviteRSVPDock } from "@/components/session/session-invite-rsvp-dock"
+import { PullOutButton } from "@/components/session/pull-out-button"
 
 interface DemoParticipant {
   name: string
@@ -130,231 +90,12 @@ interface SessionInviteProps {
   hostSlug?: string | null // Host slug for sharing (available on public invite page)
   hasStarted?: boolean // Whether the session has started (for payment flow)
   onMakePaymentClick?: () => void // Handler for make payment button
-  payingForParticipantId?: string | null // ID of participant being paid for
-  payingForParticipantName?: string | null // Name of participant being paid for
+  payingForParticipantId?: string | null // ID of participant being paid for (first selected, for payment submission)
+  payingForParticipantNames?: string[] // Names of all participants being paid for (for display)
   isFull?: boolean // Whether the session is at capacity
   joinedCount?: number // Number of confirmed participants
   participantName?: string | null // Name of the current participant (for success message)
-}
-
-// Swipe to Join Slider Component (iPhone-style)
-const DEBUG_SWIPE = false // Set to true for debugging console logs
-
-function SwipeToJoinSlider({
-  onJoin,
-  disabled = false,
-  uiMode,
-  isPreviewMode = false,
-  label = "Join session",
-  isJoined = false,
-}: {
-  onJoin: () => void
-  disabled?: boolean
-  uiMode: "dark" | "light"
-  isPreviewMode?: boolean
-  label?: string
-  isJoined?: boolean
-}) {
-  const sliderRef = useRef<HTMLDivElement>(null)
-
-  const HANDLE_W = 56
-  const threshold = 0.85
-
-  const [isDragging, setIsDragging] = useState(false)
-  const [isCompleted, setIsCompleted] = useState(false)
-  const [maxX, setMaxX] = useState(0)
-
-  const x = useMotionValue(0)
-
-  // Measure width and keep maxX updated
-  useLayoutEffect(() => {
-    if (!sliderRef.current) {
-      DEBUG_SWIPE && console.warn("[SwipeToJoin] sliderRef is null on mount")
-      return
-    }
-
-    const el = sliderRef.current
-
-    const compute = () => {
-      const w = el.offsetWidth || 0
-      const computedMaxX = Math.max(0, w - HANDLE_W)
-
-      DEBUG_SWIPE && console.log("[SwipeToJoin] measure", {
-        width: w,
-        HANDLE_W,
-        maxX: computedMaxX,
-      })
-
-      setMaxX(computedMaxX)
-    }
-
-    compute()
-
-    const ro = new ResizeObserver(() => compute())
-    ro.observe(el)
-
-    return () => ro.disconnect()
-  }, [])
-
-  const progress = useTransform(x, (latest) => {
-    if (maxX <= 0) return 0
-    const clamped = Math.min(Math.max(latest, 0), maxX)
-    return clamped / maxX
-  })
-
-  const progressWidth = useTransform(progress, (p) => `${p * 100}%`)
-
-  const canInteract = !disabled && !isPreviewMode && !isJoined && !isCompleted && maxX > 0
-
-  DEBUG_SWIPE && console.log("[SwipeToJoin] interaction check", {
-    canInteract,
-    disabled,
-    isPreviewMode,
-    isJoined,
-    isCompleted,
-    maxX,
-  })
-
-  const handleDragEnd = async () => {
-    const p = progress.get()
-
-    DEBUG_SWIPE && console.log("[SwipeToJoin] drag end", {
-      progress: p,
-      threshold,
-      canInteract,
-    })
-
-    setIsDragging(false)
-
-    if (p >= threshold && canInteract) {
-      setIsCompleted(true)
-
-      // Smooth animate to end
-      animate(x, maxX, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
-
-      // Trigger join after tiny delay for "snap" feel
-      setTimeout(() => {
-        DEBUG_SWIPE && console.log("[SwipeToJoin] JOIN TRIGGERED")
-        onJoin()
-      }, 150)
-
-      // DO NOT reset - wait for parent to set isJoined=true, which will lock the slider
-      // The slider will stay at maxX until isJoined prop changes
-      return
-    }
-
-    // Not far enough → return to start
-    animate(x, 0, { type: "tween", duration: 0.22, ease: [0.16, 1, 0.3, 1] })
-  }
-
-  // Log drag movement
-  useEffect(() => {
-    const unsub = x.on("change", (latest) => {
-      DEBUG_SWIPE &&
-        console.log("[SwipeToJoin] dragging", {
-          x: latest,
-          progress: progress.get(),
-        })
-    })
-
-    return () => unsub()
-  }, [x, progress])
-
-  // Log prop changes
-  useEffect(() => {
-    DEBUG_SWIPE && console.log("[SwipeToJoin] props changed", {
-      disabled,
-      isPreviewMode,
-      isJoined,
-    })
-  }, [disabled, isPreviewMode, isJoined])
-
-  // If joined, lock slider at the end position permanently
-  useEffect(() => {
-    if (isJoined) {
-      setIsCompleted(true)
-      // Animate to end and lock it there (don't reset)
-      animate(x, maxX, { type: "tween", duration: 0.2, ease: [0.16, 1, 0.3, 1] })
-    } else if (disabled || isPreviewMode) {
-      // Only reset if disabled/preview (not if joined)
-      setIsCompleted(false)
-      animate(x, 0, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
-    }
-  }, [disabled, isJoined, isPreviewMode, x, maxX])
-
-  return (
-    <div
-      ref={sliderRef}
-      className={cn(
-        "relative flex-1 h-[56px] rounded-full overflow-hidden",
-        uiMode === "dark"
-          ? "bg-white/10 border border-white/20"
-          : "bg-black/10 border border-black/20"
-      )}
-      style={{ maxWidth: "calc(100% - 80px)" }}
-    >
-      {/* progress fill */}
-      <motion.div
-        className={cn(
-          "absolute inset-0 rounded-full",
-          isCompleted ? "bg-gradient-to-r from-lime-500 to-emerald-500" : "bg-transparent"
-        )}
-        style={{ width: progressWidth }}
-      />
-
-      {/* label */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
-        <span
-          className={cn(
-            "text-sm font-semibold transition-colors",
-            isCompleted
-              ? "text-black"
-              : (disabled || isPreviewMode || isJoined)
-                ? (uiMode === "dark" ? "text-white/60" : "text-black/60")
-                : (uiMode === "dark" ? "text-white/90" : "text-black/90")
-          )}
-        >
-          {isCompleted ? "Joined!" : isJoined ? "Joined" : label}
-        </span>
-      </div>
-
-      {/* hint chevron */}
-      {!isDragging && !isCompleted && !isJoined && (
-        <motion.div
-          className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none z-0"
-          animate={{ opacity: [0.35, 0.75, 0.35], x: [0, 4, 0] }}
-          transition={{ duration: 1.5, repeat: Infinity }}
-        >
-          <ChevronRight className={cn("w-4 h-4", uiMode === "dark" ? "text-white/60" : "text-black/60")} />
-        </motion.div>
-      )}
-
-      {/* handle */}
-      <motion.div
-        drag={canInteract ? "x" : false}
-        dragConstraints={{ left: 0, right: maxX }}
-        dragElastic={0.08}
-        onDragStart={() => {
-          DEBUG_SWIPE && console.log("[SwipeToJoin] drag start", {
-            canInteract,
-            maxX,
-          })
-          setIsDragging(true)
-        }}
-        onDragEnd={handleDragEnd}
-        style={{ x }}
-        className={cn(
-          "absolute left-0 top-0 bottom-0 w-14 rounded-full flex items-center justify-center z-10 shadow-lg",
-          "bg-white text-black",
-          canInteract ? "cursor-grab active:cursor-grabbing" : "opacity-50 cursor-not-allowed"
-        )}
-        whileDrag={{ scale: 1.04 }}
-        aria-label="Swipe to join session"
-      >
-        <ChevronRight className="w-5 h-5" />
-      </motion.div>
-    </div>
-  )
+  participantId?: string | null // ID of the current participant (for pull-out functionality)
 }
 
 export function SessionInvite({
@@ -385,10 +126,11 @@ export function SessionInvite({
   hasStarted = false,
   onMakePaymentClick,
   payingForParticipantId = null,
-  payingForParticipantName = null,
+  payingForParticipantNames = [],
   isFull = false,
   joinedCount = 0,
   participantName = null,
+  participantId = null,
 }: SessionInviteProps) {
   // Detect if this is an empty/new session
   const isEmptySession = !sessionId || sessionId === "new" || sessionId === "edit"
@@ -3118,6 +2860,48 @@ export function SessionInvite({
 
                 </motion.div>
           </div>
+
+              {/* Make Payment Button - Show when session has started, embedded in hero */}
+              {hasStarted && !isEditMode && onMakePaymentClick && (
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className="absolute top-125 left-1/2 -translate-x-1/2 right-auto z-20 flex justify-center"
+                >
+                  <Button
+                    onClick={async () => {
+                      if (isPreviewMode) return
+                      // Call the payment handler
+                      if (onMakePaymentClick) {
+                        onMakePaymentClick()
+                      }
+                      // Scroll to payment section after a short delay
+                      setTimeout(() => {
+                        const paymentSection = document.querySelector('[data-payment-section]')
+                        if (paymentSection) {
+                          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                        }
+                      }, 300)
+                    }}
+                    disabled={isPreviewMode}
+                    className={cn(
+                      "rounded-full h-12 font-semibold text-base shadow-lg",
+                      "bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400",
+                      "text-black border-0",
+                      "backdrop-blur-xl",
+                      "px-30", // Make button less wide
+                      "max-w-xs w-auto", // Limits max width and prevents full width
+                      isPreviewMode && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    <DollarSign className="w-5 h-5 mr-2" />
+                    Make Payment
+                    <ChevronRight className="w-5 h-5 ml-2" />
+                  </Button>
+                </motion.div>
+              )}
+
             </motion.div>
         </motion.div>
 
@@ -3126,6 +2910,7 @@ export function SessionInvite({
             transition={{ duration: 0.22, ease: "easeOut" }}
             className="px-6 pt-8 pb-[200px] space-y-4"
           >
+          {/* Content Section */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -3437,7 +3222,7 @@ export function SessionInvite({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.5 }}
             >
-              <Card id="payment-proof-section" className={`${glassCard} p-6`}>
+              <Card className={`${glassCard} p-6`}>
                 <h2 className={`text-lg font-semibold ${strongText} mb-2`}>Upload payment proof</h2>
                 {proofSubmitted ? (
                   <div className="text-center py-6">
@@ -3447,34 +3232,38 @@ export function SessionInvite({
                     <p className={`text-sm font-medium ${strongText} mb-1`}>Payment proof submitted</p>
                     <p className={`text-xs ${mutedText}`}>Your payment proof is being reviewed by the host.</p>
                   </div>
-                ) : rsvpState === "waitlisted" ? (
-                  <div className="text-center py-6">
-                    <p className={`text-sm ${mutedText} mb-2`}>
-                      Payment can be made once you're confirmed from the waitlist.
-                    </p>
-                    <p className={`text-xs ${mutedText}`}>
-                      We'll notify you if a spot opens up.
-                    </p>
-                  </div>
                 ) : (
                   <>
-                    {/* Determine if payment upload should be enabled */}
-                    {/* Allow upload if: public participant view AND user has joined (not waitlisted) */}
+                    {/* Payment upload - available to anyone (not in host preview mode) */}
                     {(() => {
-                      const isPublicParticipantView = !isEditMode && !!onJoinClick
-                      const isHostPreview = isPreviewMode && !onJoinClick
-                      // Allow upload for public participants (not host preview) - only if joined (not waitlisted)
-                      const canUploadPaymentProof = isPublicParticipantView && !isHostPreview && rsvpState === "joined"
+                      // Host preview: in preview mode AND no actual session ID (means it's a draft/new session being previewed)
+                      const isHostPreview = isPreviewMode && !actualSessionId
                       
                       return (
                         <>
-                          <p className={`text-sm ${mutedText} mb-4`}>
-                            {rsvpState === "joined" 
-                              ? "Please upload your payment confirmation to secure your spot."
-                              : rsvpState === "none"
-                              ? "Join the session and upload your payment confirmation to secure your spot."
-                              : "Upload your payment confirmation to secure your spot."}
-                          </p>
+                          {/* Show selected participants as pills */}
+                          {payingForParticipantNames.length > 0 && (
+                            <div className="mb-4">
+                              <p className={`text-xs ${mutedText} mb-2`}>Paying for:</p>
+                              <div className="flex flex-wrap gap-2">
+                                {payingForParticipantNames.map((name, index) => (
+                                  <div
+                                    key={index}
+                                    className={cn(
+                                      "inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium",
+                                      uiMode === "dark"
+                                        ? "bg-lime-500/20 text-lime-300 border border-lime-500/30"
+                                        : "bg-lime-500/20 text-lime-700 border border-lime-500/30"
+                                    )}
+                                  >
+                                    <span>{name}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          
+                  
                           {proofImage ? (
                             <div className="space-y-4">
                               <div className="relative">
@@ -3489,7 +3278,7 @@ export function SessionInvite({
                                   <X className="w-4 h-4" />
                                 </button>
                               </div>
-                              {canUploadPaymentProof && !isHostPreview && (
+                              {!isHostPreview && (
                                 <Button
                                   onClick={handleSubmitPaymentProof}
                                   disabled={isSubmittingProof || !proofImageFile}
@@ -3502,13 +3291,13 @@ export function SessionInvite({
                           ) : (
                             <label className={`border-2 border-dashed rounded-lg p-8 text-center hover:border-[var(--theme-accent)]/50 transition-colors cursor-pointer block ${
                               uiMode === "dark" ? "border-white/20" : "border-black/30"
-                            } ${!canUploadPaymentProof || isHostPreview ? "opacity-50 cursor-not-allowed" : ""}`}>
+                            } ${isHostPreview ? "opacity-50 cursor-not-allowed" : ""}`}>
                               <input 
                                 type="file" 
                                 accept="image/*" 
                                 onChange={handleProofImageUpload} 
                                 className="hidden"
-                                disabled={!canUploadPaymentProof || isHostPreview}
+                                disabled={isHostPreview}
                               />
                               <Upload className={`w-8 h-8 mx-auto mb-2 ${
                                 uiMode === "dark" ? "text-white/40" : "text-black/50"
@@ -3526,6 +3315,29 @@ export function SessionInvite({
                     })()}
                   </>
                 )}
+              </Card>
+            </motion.div>
+          )}
+
+          {/* Pull Out Button - Only show when user is joined and not in edit mode */}
+          {(!isEditMode || isPreviewMode) && actualSessionId && rsvpState === "joined" && participantId && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.6 }}
+            >
+              <Card className={`${glassCard} p-6`}>
+                <PullOutButton
+                  participantId={participantId}
+                  sessionId={actualSessionId}
+                  onSuccess={() => {
+                    // Refresh the page to update RSVP state
+                    if (typeof window !== "undefined") {
+                      window.location.reload()
+                    }
+                  }}
+                  uiMode={uiMode}
+                />
               </Card>
             </motion.div>
           )}
@@ -4056,8 +3868,43 @@ export function SessionInvite({
           className="fixed bottom-0 left-0 right-0 z-40 pb-safe"
         >
           <div className="mx-auto max-w-md px-4 pb-4">
-            {/* Joined state: Green glass premium UI */}
-            {rsvpState === "joined" ? (
+            {/* If session has started, always show "Session Started" slider regardless of RSVP state */}
+            {hasStarted ? (
+              /* Session Started state - show disabled slider */
+              <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
+                <div className="flex justify-center items-center gap-2 w-full">
+                  {/* Swipe to Join Slider - disabled when session started */}
+                  <SwipeToJoinSlider
+                    onJoin={() => {
+                      // Block join if session has started
+                      return
+                    }}
+                    disabled={true}
+                    uiMode={uiMode}
+                    isPreviewMode={isPreviewMode}
+                    label="Session Started"
+                    isJoined={String(rsvpState) === "joined"}
+                  />
+                  {actualSessionId && !demoMode && (
+                    <Button
+                      onClick={handleShareInviteLink}
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        "h-12 w-12 rounded-full",
+                        uiMode === "dark"
+                          ? "text-white hover:bg-white/10"
+                          : "text-black hover:bg-black/10"
+                      )}
+                      aria-label="Share invite link"
+                    >
+                      <Share2 className="h-5 w-5" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ) : rsvpState === "joined" ? (
+              /* Joined state: Green glass premium UI */
               <div className={cn(
                 "rounded-2xl p-4 shadow-2xl relative",
                 "border border-emerald-400/15",
@@ -4130,27 +3977,6 @@ export function SessionInvite({
                   <p className="text-xs text-white/60 leading-relaxed">
                     You can change your response anytime.
                   </p>
-                  
-                  {/* Payment button - show when session has started */}
-                  {hasStarted && onMakePaymentClick && (
-                    <Button
-                      onClick={(e) => {
-                        if (isPreviewMode) {
-                          e.preventDefault()
-                          return
-                        }
-                        onMakePaymentClick()
-                      }}
-                      disabled={isPreviewMode}
-                      className={cn(
-                        "mt-3 w-full bg-white hover:bg-white/90 text-black font-medium rounded-full h-10",
-                        isPreviewMode && "opacity-50 cursor-not-allowed"
-                      )}
-                    >
-                      <DollarSign className="mr-2 h-4 w-4" />
-                      Make Payment
-                    </Button>
-                  )}
                 </div>
               </div>
             ) : rsvpState === "waitlisted" ? (
@@ -4200,110 +4026,50 @@ export function SessionInvite({
             ) : (
               /* Default state - show swipe slider (rsvpState is "none") */
               <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
-                {hasStarted && onMakePaymentClick ? (
-                  /* Session has started - show payment button */
-                  <div className="flex flex-col gap-3 w-full">
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2 flex-1">
-                        {/* Small indicator that session has started */}
-                        <div className={cn(
-                          "flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium",
-                          uiMode === "dark"
-                            ? "bg-amber-500/20 text-amber-200 border border-amber-500/30"
-                            : "bg-amber-500/10 text-amber-700 border border-amber-500/30"
-                        )}>
-                          <div className={cn(
-                            "h-1.5 w-1.5 rounded-full",
-                            uiMode === "dark" ? "bg-amber-400" : "bg-amber-600"
-                          )} />
-                          Session Started
-                        </div>
-                      </div>
+                <div className="flex justify-center items-center gap-2 w-full">
+                  {/* Swipe to Join Slider */}
+                  <SwipeToJoinSlider
+                    onJoin={() => {
+                      // Block join if session has started
+                      if (hasStarted) {
+                        return
+                      }
+                      // Log waitlist intent when session is full
+                      if (isFull && publicCode) {
+                        console.log("[waitlist] session full → user attempting waitlist join", {
+                          publicCode,
+                          capacity: eventCapacity,
+                          joinedCount,
+                        })
+                      }
+                      // Call the original join handler
+                      if (onJoinClick) {
+                        onJoinClick()
+                      }
+                    }}
+                    disabled={isPreviewMode || hasStarted}
+                    uiMode={uiMode}
+                    isPreviewMode={isPreviewMode}
+                    label={hasStarted ? "Session Started" : isFull ? "Join waitlist" : "Join session"}
+                    isJoined={String(rsvpState) === "joined"}
+                  />
                       {actualSessionId && !demoMode && (
                         <Button
                           onClick={handleShareInviteLink}
                           variant="ghost"
                           size="icon"
                           className={cn(
-                            "h-8 w-8 rounded-full shrink-0",
+                            "h-12 w-12 rounded-full",
                             uiMode === "dark"
                               ? "text-white hover:bg-white/10"
                               : "text-black hover:bg-black/10"
                           )}
                           aria-label="Share invite link"
                         >
-                          <Share2 className="h-4 w-4" />
+                          <Share2 className="h-5 w-5" />
                         </Button>
-                      )}
-                    </div>
-                    <Button
-                      onClick={(e) => {
-                        if (isPreviewMode) {
-                          e.preventDefault()
-                          return
-                        }
-                        // Open payment dialog
-                        if (onMakePaymentClick) {
-                          onMakePaymentClick()
-                        }
-                      }}
-                      disabled={isPreviewMode}
-                      className={cn(
-                        "w-full bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-10",
-                        isPreviewMode && "opacity-50 cursor-not-allowed"
-                      )}
-                    >
-                      <Upload className="mr-2 h-4 w-4" />
-                      Upload Payment Proof
-                    </Button>
-                  </div>
-                ) : (
-                  /* Session hasn't started - show join slider */
-                  <div className="flex justify-center items-center gap-2 w-full">
-                    {/* Swipe to Join Slider */}
-                    <SwipeToJoinSlider
-                      onJoin={() => {
-                        // Block join if session has started
-                        if (hasStarted) {
-                          return
-                        }
-                        // Log waitlist intent when session is full
-                        if (isFull && publicCode) {
-                          console.log("[waitlist] session full → user attempting waitlist join", {
-                            publicCode,
-                            capacity: eventCapacity,
-                            joinedCount,
-                          })
-                        }
-                        // Call the original join handler
-                        if (onJoinClick) {
-                          onJoinClick()
-                        }
-                      }}
-                      disabled={isPreviewMode || hasStarted}
-                      uiMode={uiMode}
-                      isPreviewMode={isPreviewMode}
-                      label={hasStarted ? "Session Started" : isFull ? "Join waitlist" : "Join session"}
-                      isJoined={String(rsvpState) === "joined"}
-                    />
-                    {actualSessionId && !demoMode && (
-                      <Button
-                        onClick={handleShareInviteLink}
-                        variant="ghost"
-                        size="icon"
-                        className={cn(
-                          "h-12 w-12 rounded-full",
-                          uiMode === "dark"
-                            ? "text-white hover:bg-white/10"
-                            : "text-black hover:bg-black/10"
-                        )}
-                        aria-label="Share invite link"
-                      >
-                        <Share2 className="h-5 w-5" />
-                      </Button>
-                    )}
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>

@@ -974,6 +974,133 @@ export async function getUnpaidParticipants(
 }
 
 /**
+ * Pull out from session (participant-initiated)
+ * Updates participant status to 'pulled_out' and auto-promotes waitlist
+ */
+export async function pullOutFromSession({
+  participantId,
+  sessionId,
+  reason,
+}: {
+  participantId: string
+  sessionId: string
+  reason: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const traceId = newTraceId("pullout")
+  const supabase = await createAnonymousClient()
+  const adminClient = createAdminClient()
+
+  logInfo("pullout_start", withTrace({
+    participantId,
+    sessionId,
+    hasReason: !!reason,
+  }, traceId))
+
+  // Verify participant exists and belongs to this session
+  const { data: participant, error: participantError } = await supabase
+    .from("participants")
+    .select("id, session_id, status")
+    .eq("id", participantId)
+    .eq("session_id", sessionId)
+    .single()
+
+  if (participantError || !participant) {
+    logError("pullout_failed", withTrace({
+      error: participantError?.message || "Participant not found",
+      stage: "participant_validation",
+    }, traceId))
+    return { ok: false, error: "Participant not found" }
+  }
+
+  // Only allow pull-out if currently confirmed (joined)
+  if (participant.status !== "confirmed") {
+    logWarn("pullout_invalid_status", withTrace({
+      currentStatus: participant.status,
+      stage: "validation",
+    }, traceId))
+    return { ok: false, error: `Cannot pull out: participant status is ${participant.status}` }
+  }
+
+  // Update participant to pulled_out status
+  const { error: updateError } = await adminClient
+    .from("participants")
+    .update({
+      status: "pulled_out",
+      pull_out_reason: reason || null,
+      pull_out_seen: false, // Host hasn't seen this yet
+    })
+    .eq("id", participantId)
+    .eq("session_id", sessionId)
+
+  if (updateError) {
+    logError("pullout_failed", withTrace({
+      error: updateError.message,
+      stage: "status_update",
+    }, traceId))
+    return { ok: false, error: updateError.message || "Failed to pull out from session" }
+  }
+
+  // Auto-promote waitlist (same logic as removeParticipant)
+  // Get current joined count
+  const { count: joinedCount } = await adminClient
+    .from("participants")
+    .select("*", { count: "exact", head: true })
+    .eq("session_id", sessionId)
+    .eq("status", "confirmed")
+
+  // Get session capacity
+  const { data: session, error: sessionError } = await adminClient
+    .from("sessions")
+    .select("capacity")
+    .eq("id", sessionId)
+    .single()
+
+  if (!sessionError && session && session.capacity && joinedCount !== null && joinedCount < session.capacity) {
+    // Promote next waitlisted (FIFO)
+    const { data: nextWaitlisted } = await adminClient
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("status", "waitlisted")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (nextWaitlisted) {
+      await adminClient
+        .from("participants")
+        .update({ status: "confirmed" })
+        .eq("id", nextWaitlisted.id)
+      
+      logInfo("pullout_promoted_waitlist", withTrace({
+        promotedParticipantId: nextWaitlisted.id,
+      }, traceId))
+    }
+  }
+
+  logInfo("pullout_success", withTrace({
+    participantId,
+    sessionId,
+  }, traceId))
+
+  // Revalidate session page
+  revalidatePath(`/session/${sessionId}`)
+  
+  // Also revalidate public invite page if we have public_code
+  const { data: sessionData } = await adminClient
+    .from("sessions")
+    .select("host_slug, public_code")
+    .eq("id", sessionId)
+    .single()
+  
+  if (sessionData?.host_slug && sessionData?.public_code) {
+    revalidatePath(`/${sessionData.host_slug}/${sessionData.public_code}`)
+  }
+
+  return { ok: true }
+}
+
+/**
  * Submit payment proof for a session participant
  * Uploads file to Supabase Storage and creates payment_proofs record
  */
@@ -1010,13 +1137,12 @@ export async function submitPaymentProof(
     return { ok: false, error: "Session not found or not available" }
   }
 
-  // Verify participant exists and is confirmed
+  // Verify participant exists (any status - users can pay without joining first)
   const { data: participant, error: participantError } = await supabase
     .from("participants")
     .select("id, status")
     .eq("id", participantId)
     .eq("session_id", sessionId)
-    .eq("status", "confirmed") // Only allow payment if they're confirmed/joined
     .single()
 
   if (participantError || !participant) {
@@ -1026,9 +1152,9 @@ export async function submitPaymentProof(
       errorCode: participantError?.code,
     }, traceId))
     if (participantError?.code === "PGRST116") {
-      return { ok: false, error: "Participant not found. Please join the session first." }
+      return { ok: false, error: "Participant not found." }
     }
-    return { ok: false, error: "Participant not found or not confirmed. Please join the session first." }
+    return { ok: false, error: "Participant not found." }
   }
 
   try {

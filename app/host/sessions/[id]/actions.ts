@@ -348,6 +348,13 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       hostSlug: string | null
       publicCode: string | null
       waitlistEnabled: boolean
+      allParticipants?: Array<{
+        id: string
+        display_name: string
+        status: string
+        pull_out_reason: string | null
+        pull_out_seen: boolean
+      }>
     }
   | { ok: false; error: string }
 > {
@@ -375,23 +382,55 @@ export async function getSessionAnalytics(sessionId: string): Promise<
 
   const capacity = session.capacity || 0
 
-  // Get participants
+  // Get participants (including pull-out info for host)
+  // Try to get pull-out fields, but gracefully fallback if columns don't exist yet
   const { data: participants, error: participantsError } = await supabase
     .from("participants")
-    .select("id, display_name, status, created_at")
+    .select("id, display_name, status, created_at, pull_out_reason, pull_out_seen")
     .eq("session_id", sessionId)
     .order("created_at", { ascending: true })
+
+  // If query failed due to missing columns, retry without pull-out fields
+  let participantsWithPullOut = participants || []
+  if (participantsError && participantsError.message?.includes("pull_out")) {
+    // Columns don't exist yet - retry without them
+    const { data: participantsBasic, error: basicError } = await supabase
+      .from("participants")
+      .select("id, display_name, status, created_at")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true })
+    
+    if (basicError) {
+      return { ok: false, error: basicError.message }
+    }
+    
+    // Add default pull-out fields
+    participantsWithPullOut = (participantsBasic || []).map((p: any) => ({
+      ...p,
+      pull_out_reason: null,
+      pull_out_seen: false,
+    }))
+  } else if (participantsError) {
+    return { ok: false, error: participantsError.message }
+  } else {
+    // Query succeeded - ensure pull-out fields have defaults if null/undefined
+    participantsWithPullOut = (participants || []).map((p: any) => ({
+      ...p,
+      pull_out_reason: p.pull_out_reason || null,
+      pull_out_seen: p.pull_out_seen ?? false,
+    }))
+  }
 
   if (participantsError) {
     return { ok: false, error: participantsError.message }
   }
 
-  const accepted = participants?.filter((p) => p.status === "confirmed").length || 0
-  const declined = participants?.filter((p) => p.status === "cancelled").length || 0
+  const accepted = participantsWithPullOut?.filter((p) => p.status === "confirmed").length || 0
+  const declined = participantsWithPullOut?.filter((p) => p.status === "cancelled").length || 0
   const unanswered = Math.max(0, capacity - accepted - declined)
 
   const acceptedList =
-    participants
+    participantsWithPullOut
       ?.filter((p) => p.status === "confirmed")
       .map((p) => ({
         id: p.id,
@@ -400,7 +439,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       })) || []
 
   const declinedList =
-    participants
+    participantsWithPullOut
       ?.filter((p) => p.status === "cancelled")
       .map((p) => ({
         id: p.id,
@@ -409,7 +448,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       })) || []
 
   const waitlistedList =
-    participants
+    participantsWithPullOut
       ?.filter((p) => p.status === "waitlisted")
       .map((p) => ({
         id: p.id,
@@ -478,6 +517,13 @@ export async function getSessionAnalytics(sessionId: string): Promise<
     hostSlug: session.host_slug as string | null,
     publicCode: session.public_code as string | null,
     waitlistEnabled: (session as any).waitlist_enabled !== false, // Default to true if null/undefined
+    allParticipants: (participantsWithPullOut || []).map((p: any) => ({
+      id: p.id,
+      display_name: p.display_name,
+      status: p.status,
+      pull_out_reason: p.pull_out_reason || null,
+      pull_out_seen: p.pull_out_seen || false,
+    })),
   }
 }
 
@@ -1430,6 +1476,105 @@ export async function updateParticipantStatus(
   return { ok: true }
 }
 
+/**
+ * Auto-promote waitlist when a joined participant is removed
+ * Server-side only to avoid race conditions
+ */
+async function removeParticipantAndPromoteWaitlist({
+  sessionId,
+  participantId,
+}: {
+  sessionId: string
+  participantId: string
+}): Promise<{ ok: true } | { ok: false; error: string }> {
+  const adminClient = createAdminClient()
+
+  // 1. Get participant status before removal
+  const { data: participant, error: participantError } = await adminClient
+    .from("participants")
+    .select("id, session_id, status")
+    .eq("id", participantId)
+    .eq("session_id", sessionId)
+    .single()
+
+  if (participantError || !participant) {
+    return { ok: false, error: "Participant not found" }
+  }
+
+  // 2. Hard-delete the participant (or update to pulled_out if it's a participant-initiated pull-out)
+  // For host removal, we hard-delete. For participant pull-out, we update status.
+  // This function is called for host removals, so we hard-delete.
+  const { error: deleteError } = await adminClient
+    .from("participants")
+    .delete()
+    .eq("id", participantId)
+    .eq("session_id", sessionId)
+
+  if (deleteError) {
+    console.error("[removeParticipantAndPromoteWaitlist] Error deleting participant:", deleteError)
+    return { ok: false, error: deleteError.message || "Failed to remove participant" }
+  }
+
+  // 3. Only promote if the removed participant was "confirmed" (joined)
+  if (participant.status !== "confirmed") {
+    // No promotion needed if they weren't confirmed
+    return { ok: true }
+  }
+
+  // 4. Get current joined count
+  const { count: joinedCount } = await adminClient
+    .from("participants")
+    .select("*", { count: "exact", head: true })
+    .eq("session_id", sessionId)
+    .eq("status", "confirmed")
+
+  // 5. Get session capacity
+  const { data: session, error: sessionError } = await adminClient
+    .from("sessions")
+    .select("capacity")
+    .eq("id", sessionId)
+    .single()
+
+  if (sessionError || !session) {
+    console.error("[removeParticipantAndPromoteWaitlist] Error fetching session:", sessionError)
+    // Still return success - participant was removed, just couldn't promote
+    return { ok: true }
+  }
+
+  // 6. Promote next waitlisted if capacity allows (FIFO order)
+  if (session.capacity && joinedCount !== null && joinedCount < session.capacity) {
+    const { data: nextWaitlisted, error: waitlistError } = await adminClient
+      .from("participants")
+      .select("id")
+      .eq("session_id", sessionId)
+      .eq("status", "waitlisted")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle()
+
+    if (waitlistError) {
+      console.error("[removeParticipantAndPromoteWaitlist] Error fetching waitlist:", waitlistError)
+      // Still return success - participant was removed
+      return { ok: true }
+    }
+
+    if (nextWaitlisted) {
+      const { error: promoteError } = await adminClient
+        .from("participants")
+        .update({ status: "confirmed" })
+        .eq("id", nextWaitlisted.id)
+
+      if (promoteError) {
+        console.error("[removeParticipantAndPromoteWaitlist] Error promoting waitlist:", promoteError)
+        // Still return success - participant was removed
+        return { ok: true }
+      }
+    }
+  }
+
+  return { ok: true }
+}
+
 export async function removeParticipant(
   sessionId: string,
   participantId: string
@@ -1456,34 +1601,11 @@ export async function removeParticipant(
     return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
-  // Verify participant belongs to this session
-  const { data: participant, error: participantError } = await supabase
-    .from("participants")
-    .select("id, session_id")
-    .eq("id", participantId)
-    .single()
+  // Use the auto-promote logic
+  const result = await removeParticipantAndPromoteWaitlist({ sessionId, participantId })
 
-  if (participantError || !participant) {
-    return { ok: false, error: "Participant not found" }
-  }
-
-  if (participant.session_id !== sessionId) {
-    return { ok: false, error: "Participant does not belong to this session" }
-  }
-
-  // Use admin client to bypass RLS (host action)
-  const adminClient = createAdminClient()
-
-  // Hard-delete the participant
-  const { error: deleteError } = await adminClient
-    .from("participants")
-    .delete()
-    .eq("id", participantId)
-    .eq("session_id", sessionId) // Extra safety check
-
-  if (deleteError) {
-    console.error("[removeParticipant] Error:", deleteError)
-    return { ok: false, error: deleteError.message || "Failed to remove participant" }
+  if (!result.ok) {
+    return result
   }
 
   // Revalidate paths

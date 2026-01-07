@@ -50,6 +50,13 @@ interface AnalyticsData {
   hostSlug: string | null
   publicCode: string | null
   waitlistEnabled: boolean
+  allParticipants?: Array<{
+    id: string
+    display_name: string
+    status: string
+    pull_out_reason: string | null
+    pull_out_seen: boolean
+  }>
 }
 
 export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalyticsProps) {
@@ -69,6 +76,14 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
   const [newParticipantPhone, setNewParticipantPhone] = useState("")
   const [isAdding, setIsAdding] = useState(false)
   const [isRemoving, setIsRemoving] = useState(false)
+
+  // Pull-out notification dialog state
+  const [pullOutDialogOpen, setPullOutDialogOpen] = useState(false)
+  const [pullOutParticipant, setPullOutParticipant] = useState<{
+    id: string
+    display_name: string
+    pull_out_reason: string | null
+  } | null>(null)
 
   // Check if we should show payments view
   const mode = searchParams.get("mode")
@@ -106,6 +121,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             hostSlug: result.hostSlug,
             publicCode: result.publicCode,
             waitlistEnabled: result.waitlistEnabled,
+            allParticipants: result.allParticipants || [],
           })
           
           // Initialize requirePaymentProof based on price
