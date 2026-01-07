@@ -2416,7 +2416,7 @@ export function SessionInvite({
             {/* Scroll Cue - Only show in preview/public mode when not scrolled */}
             {(!isEditMode || isPreviewMode) && !scrolled && (
               <motion.div
-                className="absolute left-0 right-0 bottom-34 z-20 flex justify-center pointer-events-none"
+                className="fixed left-0 right-0 bottom-[140px] z-30 flex justify-center pointer-events-none"
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ duration: 0.4 }}
@@ -2861,46 +2861,6 @@ export function SessionInvite({
                 </motion.div>
           </div>
 
-              {/* Make Payment Button - Show when session has started, embedded in hero */}
-              {hasStarted && !isEditMode && onMakePaymentClick && (
-                <motion.div
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ duration: 0.3 }}
-                  className="absolute top-125 left-1/2 -translate-x-1/2 right-auto z-20 flex justify-center"
-                >
-                  <Button
-                    onClick={async () => {
-                      if (isPreviewMode) return
-                      // Call the payment handler
-                      if (onMakePaymentClick) {
-                        onMakePaymentClick()
-                      }
-                      // Scroll to payment section after a short delay
-                      setTimeout(() => {
-                        const paymentSection = document.querySelector('[data-payment-section]')
-                        if (paymentSection) {
-                          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
-                        }
-                      }, 300)
-                    }}
-                    disabled={isPreviewMode}
-                    className={cn(
-                      "rounded-full h-12 font-semibold text-base shadow-lg",
-                      "bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400",
-                      "text-black border-0",
-                      "backdrop-blur-xl",
-                      "px-30", // Make button less wide
-                      "max-w-xs w-auto", // Limits max width and prevents full width
-                      isPreviewMode && "opacity-50 cursor-not-allowed"
-                    )}
-                  >
-                    <DollarSign className="w-5 h-5 mr-2" />
-                    Make Payment
-                    <ChevronRight className="w-5 h-5 ml-2" />
-                  </Button>
-                </motion.div>
-              )}
 
             </motion.div>
         </motion.div>
@@ -3868,22 +3828,33 @@ export function SessionInvite({
           className="fixed bottom-0 left-0 right-0 z-40 pb-safe"
         >
           <div className="mx-auto max-w-md px-4 pb-4">
-            {/* If session has started, always show "Session Started" slider regardless of RSVP state */}
+            {/* If session has started, always show "Make Payment" slider regardless of RSVP state */}
             {hasStarted ? (
-              /* Session Started state - show disabled slider */
+              /* Session Started state - show payment slider */
               <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
                 <div className="flex justify-center items-center gap-2 w-full">
-                  {/* Swipe to Join Slider - disabled when session started */}
+                  {/* Swipe to Make Payment Slider */}
                   <SwipeToJoinSlider
                     onJoin={() => {
                       // Block join if session has started
                       return
                     }}
-                    disabled={true}
+                    onPayment={onMakePaymentClick ? () => {
+                      if (isPreviewMode) return
+                      onMakePaymentClick()
+                      // Scroll to payment section after a short delay
+                      setTimeout(() => {
+                        const paymentSection = document.querySelector('[data-payment-section]')
+                        if (paymentSection) {
+                          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                        }
+                      }, 300)
+                    } : undefined}
+                    disabled={false}
                     uiMode={uiMode}
                     isPreviewMode={isPreviewMode}
-                    label="Session Started"
-                    isJoined={String(rsvpState) === "joined"}
+                    label="Make Payment"
+                    isJoined={false}
                   />
                   {actualSessionId && !demoMode && (
                     <Button

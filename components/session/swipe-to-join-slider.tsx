@@ -10,6 +10,7 @@ const DEBUG_SWIPE = false // Set to true for debugging console logs
 
 export function SwipeToJoinSlider({
   onJoin,
+  onPayment,
   disabled = false,
   uiMode,
   isPreviewMode = false,
@@ -17,6 +18,7 @@ export function SwipeToJoinSlider({
   isJoined = false,
 }: {
   onJoin: () => void
+  onPayment?: () => void
   disabled?: boolean
   uiMode: "dark" | "light"
   isPreviewMode?: boolean
@@ -72,7 +74,8 @@ export function SwipeToJoinSlider({
 
   const progressWidth = useTransform(progress, (p) => `${p * 100}%`)
 
-  const canInteract = !disabled && !isPreviewMode && !isJoined && !isCompleted && maxX > 0
+  // Allow interaction if payment handler exists (even if disabled for join)
+  const canInteract = (!disabled || onPayment) && !isPreviewMode && !isCompleted && maxX > 0
 
   DEBUG_SWIPE && console.log("[SwipeToJoin] interaction check", {
     canInteract,
@@ -100,14 +103,23 @@ export function SwipeToJoinSlider({
       // Smooth animate to end
       animate(x, maxX, { type: "tween", duration: 0.18, ease: [0.16, 1, 0.3, 1] })
 
-      // Trigger join after tiny delay for "snap" feel
+      // Trigger join or payment after tiny delay for "snap" feel
       setTimeout(() => {
-        DEBUG_SWIPE && console.log("[SwipeToJoin] JOIN TRIGGERED")
-        onJoin()
+        DEBUG_SWIPE && console.log("[SwipeToJoin] ACTION TRIGGERED", { hasPayment: !!onPayment })
+        if (onPayment) {
+          onPayment()
+          // Reset slider after payment action (payment doesn't lock the slider)
+          setTimeout(() => {
+            setIsCompleted(false)
+            animate(x, 0, { type: "tween", duration: 0.22, ease: [0.16, 1, 0.3, 1] })
+          }, 500)
+        } else {
+          onJoin()
+        }
       }, 150)
 
       // DO NOT reset - wait for parent to set isJoined=true, which will lock the slider
-      // The slider will stay at maxX until isJoined prop changes
+      // The slider will stay at maxX until isJoined prop changes (only for join, not payment)
       return
     }
 

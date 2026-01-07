@@ -22,6 +22,7 @@ interface SessionInviteRSVPDockProps {
   eventCapacity: number
   joinedCount: number
   onJoinClick?: () => void
+  onMakePaymentClick?: () => void
   onShareInviteLink: () => void
 }
 
@@ -41,6 +42,7 @@ export function SessionInviteRSVPDock({
   eventCapacity,
   joinedCount,
   onJoinClick,
+  onMakePaymentClick,
   onShareInviteLink,
 }: SessionInviteRSVPDockProps) {
   return (
@@ -55,22 +57,33 @@ export function SessionInviteRSVPDock({
           className="fixed bottom-0 left-0 right-0 z-40 pb-safe"
         >
           <div className="mx-auto max-w-md px-4 pb-4">
-            {/* If session has started, always show "Session Started" slider regardless of RSVP state */}
+            {/* If session has started, always show "Make Payment" slider regardless of RSVP state */}
             {hasStarted ? (
-              /* Session Started state - show disabled slider */
+              /* Session Started state - show payment slider */
               <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
                 <div className="flex justify-center items-center gap-2 w-full">
-                  {/* Swipe to Join Slider - disabled when session started */}
+                  {/* Swipe to Make Payment Slider */}
                   <SwipeToJoinSlider
                     onJoin={() => {
                       // Block join if session has started
                       return
                     }}
-                    disabled={true}
+                    onPayment={onMakePaymentClick ? () => {
+                      if (isPreviewMode) return
+                      onMakePaymentClick()
+                      // Scroll to payment section after a short delay
+                      setTimeout(() => {
+                        const paymentSection = document.querySelector('[data-payment-section]')
+                        if (paymentSection) {
+                          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                        }
+                      }, 300)
+                    } : undefined}
+                    disabled={false}
                     uiMode={uiMode}
                     isPreviewMode={isPreviewMode}
-                    label="Session Started"
-                    isJoined={String(rsvpState) === "joined"}
+                    label="Make Payment"
+                    isJoined={false}
                   />
                   {actualSessionId && !demoMode && (
                     <Button

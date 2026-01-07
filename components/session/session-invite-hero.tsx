@@ -200,7 +200,7 @@ export function SessionInviteHero({
           {/* Scroll Cue - Only show in preview/public mode when not scrolled */}
           {(!isEditMode || isPreviewMode) && !scrolled && (
             <motion.div
-              className="absolute left-0 right-0 bottom-34 z-20 flex justify-center pointer-events-none"
+              className="fixed left-0 right-0 bottom-[140px] z-30 flex justify-center pointer-events-none"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               transition={{ duration: 0.4 }}
@@ -641,46 +641,6 @@ export function SessionInviteHero({
               </motion.div>
             </div>
 
-            {/* Make Payment Button - Show when session has started, embedded in hero */}
-            {hasStarted && !isEditMode && onMakePaymentClick && (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.3 }}
-                className="absolute top-125 left-1/2 -translate-x-1/2 right-auto z-20 flex justify-center"
-              >
-                <Button
-                  onClick={async () => {
-                    if (isPreviewMode) return
-                    // Call the payment handler
-                    if (onMakePaymentClick) {
-                      onMakePaymentClick()
-                    }
-                    // Scroll to payment section after a short delay
-                    setTimeout(() => {
-                      const paymentSection = document.querySelector('[data-payment-section]')
-                      if (paymentSection) {
-                        paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
-                      }
-                    }, 300)
-                  }}
-                  disabled={isPreviewMode}
-                  className={cn(
-                    "rounded-full h-12 font-semibold text-base shadow-lg",
-                    "bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400",
-                    "text-black border-0",
-                    "backdrop-blur-xl",
-                    "px-30", // Make button less wide
-                    "max-w-xs w-auto", // Limits max width and prevents full width
-                    isPreviewMode && "opacity-50 cursor-not-allowed"
-                  )}
-                >
-                  <DollarSign className="w-5 h-5 mr-2" />
-                  Make Payment
-                  <ChevronRight className="w-5 h-5 ml-2" />
-                </Button>
-              </motion.div>
-            )}
           </motion.div>
         </motion.div>
       </div>
