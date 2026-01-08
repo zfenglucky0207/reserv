@@ -172,15 +172,16 @@ export function SessionInviteContent({
               // Only show map iframe if we have a valid Google Maps URL
               if (validMapUrl) {
                 return (
-                  <div className="w-full h-48 rounded-lg overflow-hidden bg-slate-800">
+                  <div className="relative w-full h-48 rounded-2xl overflow-hidden">
                     <iframe
+                      src={getMapEmbedSrc(validMapUrl)}
                       width="100%"
                       height="100%"
-                      frameBorder="0"
-                      src={getMapEmbedSrc(validMapUrl)}
                       style={{ border: 0 }}
                       allowFullScreen
                       loading="lazy"
+                      referrerPolicy="no-referrer-when-downgrade"
+                      title="Session location"
                     />
                   </div>
                 )

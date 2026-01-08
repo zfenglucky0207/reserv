@@ -154,14 +154,39 @@ export function formatEventDate(date: Date, hour: number, minute: number, ampm: 
   return `${dayName}, ${monthName} ${day} • ${startTime} - ${endTime}`
 }
 
-// Helper function to validate if a string is a valid Google Maps URL
+// Helper function to extract URL from iframe HTML
+export function extractMapUrlFromIframe(html: string): string | null {
+  if (!html || !html.trim()) {
+    return null
+  }
+  
+  // Try to extract src from iframe tag
+  const iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i)
+  if (iframeMatch && iframeMatch[1]) {
+    return iframeMatch[1].trim()
+  }
+  
+  // If no iframe found, return null (will be treated as regular URL)
+  return null
+}
+
+// Helper function to validate if a string is a valid Google Maps URL or iframe HTML
 export function isValidGoogleMapsUrl(value: string | null | undefined): boolean {
   if (!value || !value.trim()) {
     return false
   }
 
+  const trimmed = value.trim()
+  
+  // Check if it's an iframe HTML - if so, extract and validate the URL
+  const extractedUrl = extractMapUrlFromIframe(trimmed)
+  if (extractedUrl) {
+    // Validate the extracted URL
+    return isValidGoogleMapsUrl(extractedUrl)
+  }
+
   try {
-    const url = new URL(value.trim())
+    const url = new URL(trimmed)
     const hostname = url.hostname.toLowerCase()
     
     // Check if hostname is a Google Maps domain
@@ -197,33 +222,111 @@ export function isValidGoogleMapsUrl(value: string | null | undefined): boolean 
   }
 }
 
+// Helper function to normalize a map URL (extract from iframe HTML if needed)
+export function normalizeMapUrl(value: string): string {
+  if (!value || !value.trim()) {
+    return ""
+  }
+  
+  const trimmed = value.trim()
+  
+  // Check if it's an iframe HTML - extract the URL
+  const extractedUrl = extractMapUrlFromIframe(trimmed)
+  if (extractedUrl) {
+    return extractedUrl
+  }
+  
+  // Otherwise return as-is
+  return trimmed
+}
+
 // Helper function to get the Google Maps URL to embed (checks both eventMapUrl and eventLocation)
 export function getValidGoogleMapsUrl(eventMapUrl: string, eventLocation: string): string | null {
   // First check eventMapUrl (dedicated map URL field)
   if (eventMapUrl && isValidGoogleMapsUrl(eventMapUrl)) {
-    return eventMapUrl.trim()
+    return normalizeMapUrl(eventMapUrl)
   }
   
   // Then check eventLocation (might contain a Google Maps URL)
   if (eventLocation && isValidGoogleMapsUrl(eventLocation)) {
-    return eventLocation.trim()
+    return normalizeMapUrl(eventLocation)
   }
   
   return null
 }
 
 // Helper function to convert map URL to embed URL
+// 
+// IMPORTANT: The best way is to get the embed URL directly from Google Maps:
+// 1. Go to Google Maps (maps.google.com)
+// 2. Search for your location
+// 3. Click "Share" button
+// 4. Click "Embed a map" tab
+// 5. Copy the URL from the iframe src attribute
+//    It will look like: https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d...
+//
+// This function handles:
+// 1. Direct embed URLs (pb= format) - returns as-is ✅
+// 2. Place URLs - converts to embed format
+// 3. Short URLs (maps.app.goo.gl) - converts to embed format
 export function getMapEmbedSrc(mapUrl: string): string {
   try {
-    // Check if it's already an embed URL
-    if (mapUrl.includes("/embed")) {
-      return mapUrl
+    const trimmedUrl = mapUrl.trim()
+    
+    // If it's already an embed URL with pb= parameter, return as-is (best option)
+    if (trimmedUrl.includes("embed?pb=") || trimmedUrl.includes("/embed?pb=")) {
+      // Ensure it's a full URL
+      if (trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")) {
+        return trimmedUrl
+      }
+      return `https://www.google.com${trimmedUrl.startsWith("/") ? "" : "/"}${trimmedUrl}`
     }
-    // Convert to embed URL
-    return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
+    
+    // If it contains /embed but no pb=, it might be a partial embed URL
+    if (trimmedUrl.includes("/embed")) {
+      if (trimmedUrl.startsWith("http://") || trimmedUrl.startsWith("https://")) {
+        return trimmedUrl
+      }
+      return `https://www.google.com${trimmedUrl.startsWith("/") ? "" : "/"}${trimmedUrl}`
+    }
+    
+    // For other Google Maps URLs, we need to convert them
+    // The most reliable way is to use Google Maps' embed API with the location
+    const url = new URL(trimmedUrl)
+    const hostname = url.hostname.toLowerCase()
+    
+    // Handle place URLs - extract coordinates or place name
+    if (url.pathname.includes("/place/")) {
+      // Try to extract coordinates from @lat,lng format
+      const coordMatch = url.pathname.match(/@(-?\d+\.?\d*),(-?\d+\.?\d*)/)
+      if (coordMatch) {
+        const lat = coordMatch[1]
+        const lng = coordMatch[2]
+        // Use coordinates in embed URL
+        return `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d0!2d${lng}!3d${lat}!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2smy!4v0!5m2!1sen!2smy`
+      }
+      
+      // Extract place name if no coordinates
+      const placeMatch = url.pathname.match(/\/place\/([^/@]+)/)
+      if (placeMatch) {
+        const placeName = decodeURIComponent(placeMatch[1].replace(/\+/g, ' '))
+        // Use place name as search query
+        return `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d0!2d0!3d0!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2smy!4v0!5m2!1sen!2smy&q=${encodeURIComponent(placeName)}`
+      }
+    }
+    
+    // Handle short URLs - these need to be resolved, but we can try
+    if (hostname.includes("maps.app.goo.gl") || hostname.includes("goo.gl")) {
+      // For short URLs, use the URL as a search query
+      // Note: This may not work perfectly, best to get embed URL directly
+      return `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d0!2d0!3d0!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2smy!4v0!5m2!1sen!2smy&q=${encodeURIComponent(trimmedUrl)}`
+    }
+    
+    // Fallback: use the URL as a search query
+    return `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d0!2d0!3d0!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2smy!4v0!5m2!1sen!2smy&q=${encodeURIComponent(trimmedUrl)}`
   } catch {
-    // Fallback
-    return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
+    // Final fallback
+    return `https://www.google.com/maps/embed?pb=!1m18!1m12!1m3!1d0!2d0!3d0!2m3!1f0!2f0!3f0!3m2!1i1024!2i768!4f13.1!3m3!1m2!1s0x0%3A0x0!2z!5e0!3m2!1sen!2smy!4v0!5m2!1sen!2smy&q=${encodeURIComponent(mapUrl.trim())}`
   }
 }
 

@@ -50,7 +50,7 @@ import { PublishShareSheet } from "@/components/publish-share-sheet"
 import { HostSessionAnalytics } from "@/components/host/host-session-analytics"
 import { Share2 } from "lucide-react"
 import { HERO_TITLE_SHADOW, HERO_META_SHADOW, HERO_ICON_SHADOW, DEFAULT_COVER_BG, SPORT_COVER_MAP, SPORT_THEME_MAP, TITLE_FONTS } from "@/constants/session-invite-constants"
-import { formatCourtDisplay, getSportDisplayName, getCoverOptions, parseEventDate, formatEventDate, isValidGoogleMapsUrl, getValidGoogleMapsUrl, getMapEmbedSrc, isTitleValid, isDateValid, isLocationValid, isPriceValid, isCapacityValid, isHostValid } from "@/utils/session-invite-helpers"
+import { formatCourtDisplay, getSportDisplayName, getCoverOptions, parseEventDate, formatEventDate, isValidGoogleMapsUrl, getValidGoogleMapsUrl, getMapEmbedSrc, normalizeMapUrl, isTitleValid, isDateValid, isLocationValid, isPriceValid, isCapacityValid, isHostValid } from "@/utils/session-invite-helpers"
 import { SwipeToJoinSlider } from "@/components/session/swipe-to-join-slider"
 import { SessionInviteHero } from "@/components/session/session-invite-hero"
 import { SessionInviteContent } from "@/components/session/session-invite-content"
@@ -1155,18 +1155,10 @@ export function SessionInvite({
   }
 
   // Helper function to convert map URL to embed URL
+  // Uses the shared helper from utils to avoid duplication
   const getMapEmbedSrc = (mapUrl: string): string => {
-    try {
-      // Check if it's already an embed URL
-      if (mapUrl.includes("/embed")) {
-        return mapUrl
-      }
-      // Convert to embed URL
-      return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
-    } catch {
-      // Fallback
-      return `https://www.google.com/maps?q=${encodeURIComponent(mapUrl)}&output=embed`
-    }
+    const { getMapEmbedSrc: getEmbedSrc } = require("@/utils/session-invite-helpers")
+    return getEmbedSrc(mapUrl)
   }
 
   const handleLocationSave = () => {
@@ -1178,10 +1170,18 @@ export function SessionInvite({
       setEventLocation(trimmedLocation)
     }
     
-    // Normalize map URL (prepend https:// if needed)
+    // Normalize map URL - extract from iframe HTML if needed, or use as-is
     let normalizedMapUrl = trimmedMapUrl
-    if (normalizedMapUrl && !normalizedMapUrl.startsWith("http://") && !normalizedMapUrl.startsWith("https://")) {
-      normalizedMapUrl = `https://${normalizedMapUrl}`
+    if (normalizedMapUrl) {
+      // Extract URL from iframe HTML if present, otherwise use as-is
+      const extracted = normalizeMapUrl(normalizedMapUrl)
+      
+      if (extracted) {
+        normalizedMapUrl = extracted
+      } else if (!normalizedMapUrl.startsWith("http://") && !normalizedMapUrl.startsWith("https://")) {
+        // If not an iframe and not a full URL, prepend https://
+        normalizedMapUrl = `https://${normalizedMapUrl}`
+      }
     }
     setEventMapUrl(normalizedMapUrl)
     
@@ -1223,12 +1223,124 @@ export function SessionInvite({
   const handleProofImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
-      // Store the File object for submission
-      setProofImageFile(file)
-      // Create preview
+      // Validate file type
+      if (!file.type.startsWith("image/")) {
+        toast({
+          title: "Invalid file",
+          description: "Please upload an image file.",
+          variant: "default",
+        })
+        return
+      }
+
+      // Validate file size (max 10MB before compression)
+      if (file.size > 10 * 1024 * 1024) {
+        toast({
+          title: "File too large",
+          description: "Please upload an image smaller than 10MB.",
+          variant: "default",
+        })
+        return
+      }
+
+      // Compress and convert to data URL
+      // Payment proof optimization: 720px longest edge, JPEG quality 65
       const reader = new FileReader()
       reader.onloadend = () => {
-        setProofImage(reader.result as string)
+        const img = new Image()
+        img.onload = () => {
+          // Create canvas for compression
+          const canvas = document.createElement('canvas')
+          const MAX_LONGEST_EDGE = 720 // Recommended for payment proofs (receipts/screenshots)
+          
+          let width = img.width
+          let height = img.height
+          const longestEdge = Math.max(width, height)
+          
+          // Calculate new dimensions while maintaining aspect ratio
+          // Resize to 720px on longest edge
+          if (longestEdge > MAX_LONGEST_EDGE) {
+            const scale = MAX_LONGEST_EDGE / longestEdge
+            width = Math.round(width * scale)
+            height = Math.round(height * scale)
+          }
+          
+          canvas.width = width
+          canvas.height = height
+          
+          // Draw and compress
+          const ctx = canvas.getContext('2d')
+          if (ctx) {
+            // Use high-quality rendering for text readability
+            ctx.imageSmoothingEnabled = true
+            ctx.imageSmoothingQuality = 'high'
+            ctx.drawImage(img, 0, 0, width, height)
+            
+            // Convert to JPEG with quality 65 (optimal for receipts/screenshots)
+            // This keeps text readable while minimizing file size
+            let compressedDataUrl = canvas.toDataURL('image/jpeg', 0.65)
+            
+            // Check compressed size (base64 is ~33% larger than binary)
+            const base64Size = compressedDataUrl.length
+            const estimatedBinarySize = (base64Size * 3) / 4
+            const estimatedKB = estimatedBinarySize / 1024
+            
+            // If still too large (>500KB), compress more aggressively
+            if (estimatedKB > 500) {
+              compressedDataUrl = canvas.toDataURL('image/jpeg', 0.60)
+              const newBase64Size = compressedDataUrl.length
+              const newEstimatedKB = ((newBase64Size * 3) / 4) / 1024
+              
+              // If still too large, reduce quality further
+              if (newEstimatedKB > 500) {
+                compressedDataUrl = canvas.toDataURL('image/jpeg', 0.55)
+              }
+            }
+            
+            // Store compressed data URL for preview and submission
+            setProofImage(compressedDataUrl)
+            
+            // Create a File object from the compressed data URL for submission
+            // Convert data URL to blob, then to File
+            fetch(compressedDataUrl)
+              .then(res => res.blob())
+              .then(blob => {
+                // Strip metadata by creating a new blob without EXIF
+                const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), { type: 'image/jpeg' })
+                setProofImageFile(compressedFile)
+                
+                // Log final size for debugging
+                const finalKB = (compressedFile.size / 1024).toFixed(1)
+                console.log(`[PaymentProof] Compressed: ${(file.size / 1024).toFixed(1)}KB → ${finalKB}KB`)
+              })
+              .catch(error => {
+                console.error("Error creating compressed file:", error)
+                // Fallback: use original file if compression file creation fails
+                setProofImageFile(file)
+              })
+            
+            toast({
+              title: "Image uploaded",
+              description: "Payment proof image has been optimized and uploaded.",
+              variant: "success",
+            })
+          }
+        }
+        img.onerror = () => {
+          toast({
+            title: "Upload failed",
+            description: "Failed to process the image file.",
+            variant: "default",
+          })
+        }
+        img.src = reader.result as string
+      }
+      reader.onerror = () => {
+        toast({
+          title: "Upload failed",
+          description: "Failed to read the image file.",
+          variant: "default",
+        })
       }
       reader.readAsDataURL(file)
     }
@@ -1246,7 +1358,16 @@ export function SessionInvite({
   }, [actualSessionId])
 
   const handleSubmitPaymentProof = async () => {
-    if (!proofImageFile || !actualSessionId) return
+    if (!proofImage && !proofImageFile) {
+      toast({
+        title: "Error",
+        description: "No payment proof image selected.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (!actualSessionId) return
 
     if (typeof window === "undefined") return
 
@@ -1261,92 +1382,101 @@ export function SessionInvite({
     
     logInfo("upload_start", withTrace({
       participantId: participantIdForUpload,
-      fileName: proofImageFile.name,
-      fileSize: proofImageFile.size,
-      mime: proofImageFile.type,
+      fileName: proofImageFile?.name || "payment-proof.jpg",
+      fileSize: proofImageFile?.size || 0,
+      mime: proofImageFile?.type || "image/jpeg",
       sessionId: actualSessionId,
       guestKey,
+      hasCompressedImage: !!proofImage,
     }, traceId))
 
     setIsSubmittingProof(true)
 
     try {
-      // Convert file to base64
-      const reader = new FileReader()
-      reader.readAsDataURL(proofImageFile)
-      reader.onloadend = async () => {
-        const base64Data = reader.result as string
-
-        const { submitPaymentProof } = await import("@/app/session/[id]/actions")
-        
-        // Use participant ID from props
-        if (!payingForParticipantId) {
-          logError("upload_failed", withTrace({
-            error: "No participant ID provided",
-            stage: "validation",
-          }, traceId))
-          toast({
-            title: "Error",
-            description: "Please select who you're paying for first.",
-            variant: "destructive",
-          })
-          setIsSubmittingProof(false)
-          return
-        }
-        
-        const result = await submitPaymentProof(
-          actualSessionId,
-          payingForParticipantId,
-          base64Data,
-          proofImageFile.name
-        )
-
-        if (result.ok) {
-          logInfo("upload_success", withTrace({
-            storagePath: result.storagePath || null,
-            publicUrl: result.publicUrl || null,
-            paymentProofId: result.paymentProofId,
-          }, traceId))
-          
-          // Mark as submitted
-          setProofSubmitted(true)
-          const cacheKey = `sl:paymentSubmitted:${actualSessionId}`
-          localStorage.setItem(cacheKey, "true")
-
-          toast({
-            title: "Payment proof submitted",
-            description: "Your payment proof has been submitted for review.",
-            variant: "success",
-          })
-
-          // Clear file and preview
-          setProofImageFile(null)
-          setProofImage(null)
-        } else {
-          logError("upload_failed", withTrace({
-            error: result.error,
-            stage: "server_action",
-          }, traceId))
-          toast({
-            title: "Failed to submit payment proof",
-            description: result.error,
-            variant: "destructive",
-          })
-        }
-        setIsSubmittingProof(false)
-      }
-      reader.onerror = () => {
-        logError("upload_failed", withTrace({
-          error: "FileReader error",
-          stage: "file_read",
-        }, traceId))
+      // Use the already-compressed proofImage (data URL) if available, otherwise convert file
+      let base64Data: string
+      
+      if (proofImage) {
+        // Use the compressed image that was already created during upload
+        base64Data = proofImage
+      } else if (proofImageFile) {
+        // Fallback: convert file to base64 (shouldn't happen if compression worked)
+        const reader = new FileReader()
+        const promise = new Promise<string>((resolve, reject) => {
+          reader.onloadend = () => {
+            resolve(reader.result as string)
+          }
+          reader.onerror = reject
+          reader.readAsDataURL(proofImageFile!)
+        })
+        base64Data = await promise
+      } else {
         toast({
-          title: "Error reading file",
-          description: "Please try again.",
+          title: "Error",
+          description: "No payment proof image selected.",
           variant: "destructive",
         })
         setIsSubmittingProof(false)
+        return
       }
+
+      const { submitPaymentProof } = await import("@/app/session/[id]/actions")
+      
+      // Use participant ID from props
+      if (!payingForParticipantId) {
+        logError("upload_failed", withTrace({
+          error: "No participant ID provided",
+          stage: "validation",
+        }, traceId))
+        toast({
+          title: "Error",
+          description: "Please select who you're paying for first.",
+          variant: "destructive",
+        })
+        setIsSubmittingProof(false)
+        return
+      }
+      
+      const result = await submitPaymentProof(
+        actualSessionId,
+        payingForParticipantId,
+        base64Data,
+        proofImageFile?.name || "payment-proof.jpg"
+      )
+
+      if (result.ok) {
+        logInfo("upload_success", withTrace({
+          storagePath: result.storagePath || null,
+          publicUrl: result.publicUrl || null,
+          paymentProofId: result.paymentProofId,
+        }, traceId))
+        
+        // Mark as submitted
+        setProofSubmitted(true)
+        const cacheKey = `sl:paymentSubmitted:${actualSessionId}`
+        localStorage.setItem(cacheKey, "true")
+
+        toast({
+          title: "Payment proof submitted",
+          description: "Your payment proof has been submitted for review.",
+          variant: "success",
+        })
+
+        // Clear file and preview
+        setProofImageFile(null)
+        setProofImage(null)
+      } else {
+        logError("upload_failed", withTrace({
+          error: result.error,
+          stage: "server_action",
+        }, traceId))
+        toast({
+          title: "Failed to submit payment proof",
+          description: result.error,
+          variant: "destructive",
+        })
+      }
+      setIsSubmittingProof(false)
     } catch (error: any) {
       logError("upload_failed", withTrace({
         error: error?.message || "Unknown error",
@@ -1354,8 +1484,8 @@ export function SessionInvite({
         stage: "exception",
       }, traceId))
       toast({
-        title: "Failed to submit payment proof",
-        description: error?.message || "Please try again.",
+        title: "Upload failed",
+        description: error?.message || "Failed to upload payment proof. Please try again.",
         variant: "destructive",
       })
       setIsSubmittingProof(false)
@@ -2983,15 +3113,16 @@ export function SessionInvite({
                   // Only show map iframe if we have a valid Google Maps URL
                   if (validMapUrl) {
                     return (
-                      <div className="w-full h-48 rounded-lg overflow-hidden bg-slate-800">
+                      <div className="relative w-full h-48 rounded-2xl overflow-hidden">
                         <iframe
+                          src={getMapEmbedSrc(validMapUrl)}
                           width="100%"
                           height="100%"
-                          frameBorder="0"
-                          src={getMapEmbedSrc(validMapUrl)}
                           style={{ border: 0 }}
                           allowFullScreen
                           loading="lazy"
+                          referrerPolicy="no-referrer-when-downgrade"
+                          title="Session location"
                         />
                       </div>
                     )
@@ -3500,7 +3631,7 @@ export function SessionInvite({
                 Google Maps link (optional)
               </label>
               <Input
-                type="url"
+                type="text"
                 value={mapUrlDraft}
                 onChange={(e) => {
                   const value = e.target.value
@@ -3514,7 +3645,7 @@ export function SessionInvite({
                     })
                   }
                 }}
-                placeholder="https://maps.google.com/... or https://maps.app.goo.gl/..."
+                placeholder='<iframe src="https://www.google.com/maps/embed?pb=..." ...></iframe>'
                 className={cn(
                   "h-12 rounded-xl focus-visible:ring-2 focus-visible:ring-lime-500/40",
                   uiMode === "dark"
@@ -3536,7 +3667,18 @@ export function SessionInvite({
                 "text-xs",
                 uiMode === "dark" ? "text-white/60" : "text-black/60"
               )}>
-                Tip: Use a Google Maps link (maps.google.com or maps.app.goo.gl) to enable the map preview. Share.google links won't work.
+                <strong>How to get the embed code:</strong>
+                <br />
+                1. Go to Google Maps and search for your location
+                <br />
+                2. Click "Share" button
+                <br />
+                3. Click "Embed a map" tab
+                <br />
+                4. Copy the entire iframe code and paste it here
+                <br />
+                <br />
+                <strong>Example:</strong> &lt;iframe src="https://www.google.com/maps/embed?pb=..." ...&gt;&lt;/iframe&gt;
               </p>
             </div>
           </div>
