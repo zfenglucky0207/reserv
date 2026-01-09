@@ -29,6 +29,8 @@ import {
   Eye,
   EyeOff,
   AlertTriangle,
+  Download,
+  Maximize2,
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -418,7 +420,7 @@ export function SessionInvite({
   const [selectedTimeDraft, setSelectedTimeDraft] = useState<{ hour: number; minute: number; ampm: "AM" | "PM" }>({ hour: 9, minute: 0, ampm: "AM" })
   const [selectedDurationDraft, setSelectedDurationDraft] = useState<number>(2) // Duration in hours (1, 1.5, 2, 2.5, 3, 3.5, 4)
   const [eventLocation, setEventLocation] = useState(initialLocation || "")
-  const [eventMapUrl, setEventMapUrl] = useState<string>("")
+  const [eventMapUrl, setEventMapUrl] = useState<string>(initialMapUrl || "")
   const [locationDraft, setLocationDraft] = useState<string>(initialLocation || "")
   const [mapUrlDraft, setMapUrlDraft] = useState<string>("")
   const [courtDraft, setCourtDraft] = useState<string>(initialCourt || "")
@@ -427,29 +429,6 @@ export function SessionInvite({
   const [eventCourt, setEventCourt] = useState(initialCourt || "")
   const [containerOverlayEnabled, setContainerOverlayEnabled] = useState(initialContainerOverlayEnabled ?? true)
 
-  // Debug logging for capacity state (public view only)
-  useEffect(() => {
-    if (!isEditMode && !isPreviewMode) {
-      console.log(`[SessionInvite] Capacity state:`, { 
-        isFull,
-        joinedCount,
-        initialCapacity,
-        eventCapacity,
-        sessionId
-      })
-    }
-  }, [isFull, joinedCount, initialCapacity, eventCapacity, sessionId, isEditMode, isPreviewMode])
-
-  // Debug logging for waitlist (public view only)
-  useEffect(() => {
-    if (!isEditMode && !isPreviewMode) {
-      console.log(`[SessionInvite] Waitlist state:`, { 
-        waitlistLength: waitlist?.length || 0,
-        waitlistItems: waitlist?.map(p => ({ id: p.id, name: p.display_name })) || [],
-        waitlistProp: waitlist
-      })
-    }
-  }, [waitlist, isEditMode, isPreviewMode])
 
   // Sync eventCourt when initialCourt prop changes (e.g., when session data loads)
   useEffect(() => {
@@ -464,6 +443,13 @@ export function SessionInvite({
       setContainerOverlayEnabled(initialContainerOverlayEnabled)
     }
   }, [initialContainerOverlayEnabled])
+
+  // Sync eventMapUrl when initialMapUrl prop changes (e.g., when session data loads)
+  useEffect(() => {
+    if (initialMapUrl !== undefined && initialMapUrl !== null) {
+      setEventMapUrl(initialMapUrl)
+    }
+  }, [initialMapUrl])
 
   // Helper function to format court display
   const formatCourtDisplay = (courtValue: string): string => {
@@ -506,10 +492,6 @@ export function SessionInvite({
   const previousCoverUrlRef = useRef<string | null>(normalizedInitialCoverUrl) // For rollback on error
   const lastSyncedInitialCoverUrlRef = useRef<string | null>(normalizedInitialCoverUrl) // Track last synced prop value
 
-  // Debug: Log when optimisticCoverUrl state changes
-  useEffect(() => {
-    console.log(`[SessionInvite] optimisticCoverUrl state changed:`, optimisticCoverUrl)
-  }, [optimisticCoverUrl])
 
   // Initialize pendingCoverUrl when modal opens
   useEffect(() => {
@@ -522,12 +504,10 @@ export function SessionInvite({
   // Only sync if the prop actually changed (to confirm DB update succeeded)
   useEffect(() => {
     const normalizedInitial = initialCoverUrl || null
-    console.log(`[useEffect initialCoverUrl] initialCoverUrl=${normalizedInitial}, optimisticCoverUrl=${optimisticCoverUrl}, lastSynced=${lastSyncedInitialCoverUrlRef.current}`)
     
     // Only sync if initialCoverUrl actually changed from what we last synced
     // This confirms the DB update succeeded and router.refresh() brought back the new value
     if (normalizedInitial !== lastSyncedInitialCoverUrlRef.current) {
-      console.log(`[useEffect initialCoverUrl] Syncing optimistic state: ${lastSyncedInitialCoverUrlRef.current} -> ${normalizedInitial}`)
       setOptimisticCoverUrl(normalizedInitial)
       lastSyncedInitialCoverUrlRef.current = normalizedInitial
       previousCoverUrlRef.current = normalizedInitial // Update rollback ref too
@@ -546,14 +526,11 @@ export function SessionInvite({
 
   // Update cover with optimistic UI and persistence
   const updateCover = React.useCallback(async (coverUrl: string | null, reopenModalOnError = false) => {
-    console.log(`[updateCover] Called with:`, { coverUrl, sessionId, reopenModalOnError })
-    
     // Store previous for rollback using functional update to get current value
     const wasModalOpen = isCoverPickerOpen
     
     // Immediately update UI (optimistic)
     setOptimisticCoverUrl((prev) => {
-      console.log(`[updateCover] Previous cover: ${prev}, New cover: ${coverUrl}`)
       previousCoverUrlRef.current = prev
       return coverUrl
     })
@@ -561,7 +538,6 @@ export function SessionInvite({
 
     // If no sessionId, just update local state (for new sessions)
     if (!sessionId || sessionId === "new" || sessionId === "edit") {
-      console.log(`[updateCover] No sessionId, skipping DB update`)
       toast({
         title: "Cover updated",
         description: "Cover will be saved when you publish the session.",
@@ -571,11 +547,9 @@ export function SessionInvite({
     }
 
     try {
-      console.log(`[updateCover] Calling updateSessionCoverUrl server action...`)
       // Persist to database (coverUrl can be null for default color)
       const { updateSessionCoverUrl } = await import("@/app/host/sessions/[id]/actions")
       const result = await updateSessionCoverUrl(sessionId, coverUrl)
-      console.log(`[updateCover] Server action result:`, result)
 
       // Success: keep optimistic state, refresh server components
       toast({
@@ -585,7 +559,6 @@ export function SessionInvite({
       })
       
       // Refresh to sync server components (but UI is already updated optimistically)
-      console.log(`[updateCover] Calling router.refresh()...`)
       router.refresh()
     } catch (error: any) {
       console.error(`[updateCover] Error:`, error)
@@ -682,12 +655,12 @@ export function SessionInvite({
               setPendingCoverUrl(compressedDataUrl)
             }
             
-            toast({
-              title: "Image selected",
-              description: "Click Confirm to apply the cover image.",
-              variant: "success",
-            })
-          }
+          toast({
+            title: "Image selected",
+            description: "Click Confirm to apply the cover image.",
+            variant: "success",
+          })
+        }
         }
         img.onerror = () => {
           toast({
@@ -714,6 +687,7 @@ export function SessionInvite({
   const [accountName, setAccountName] = useState("")
   const [paymentNotes, setPaymentNotes] = useState("")
   const [paymentQrImage, setPaymentQrImage] = useState<string | null>(initialPaymentQrImage || null)
+  const [qrImageModalOpen, setQrImageModalOpen] = useState(false)
   const [proofImage, setProofImage] = useState<string | null>(null) // For payment proof in preview mode
   const [proofImageFile, setProofImageFile] = useState<File | null>(null) // Store actual File object for upload
   const [isSubmittingProof, setIsSubmittingProof] = useState(false)
@@ -753,7 +727,6 @@ export function SessionInvite({
       const stored = localStorage.getItem(draftKey)
       if (stored) {
         const draft = JSON.parse(stored)
-        console.log("[draft] restored", { key: draftKey, updatedAt: draft.updatedAt })
 
         // Restore all form fields
         if (draft.eventTitle !== undefined) setEventTitle(draft.eventTitle || "")
@@ -764,6 +737,7 @@ export function SessionInvite({
         if (draft.selectedDurationDraft !== undefined) setSelectedDurationDraft(draft.selectedDurationDraft || 2)
         if (draft.eventLocation !== undefined) setEventLocation(draft.eventLocation || "")
         if (draft.locationDraft !== undefined) setLocationDraft(draft.locationDraft || "")
+        if (draft.eventMapUrl !== undefined) setEventMapUrl(draft.eventMapUrl || "")
         if (draft.mapUrlDraft !== undefined) setMapUrlDraft(draft.mapUrlDraft || "")
         if (draft.courtDraft !== undefined) setCourtDraft(draft.courtDraft || "")
         if (draft.eventCourt !== undefined) setEventCourt(draft.eventCourt || "")
@@ -822,6 +796,7 @@ export function SessionInvite({
           selectedDurationDraft,
           eventLocation,
           locationDraft,
+          eventMapUrl,
           mapUrlDraft,
           courtDraft,
           eventCourt,
@@ -841,7 +816,6 @@ export function SessionInvite({
           effects,
         }
         localStorage.setItem(draftKey, JSON.stringify(draft))
-        console.log("[draft] autosaved", { key: draftKey })
       } catch (error) {
         console.error("[draft] autosave failed", { key: draftKey, error })
       }
@@ -886,7 +860,6 @@ export function SessionInvite({
 
   // Handle sport change - only update sport and theme, NOT cover
   const handleSportChange = (sport: string) => {
-    console.log(`[handleSportChange] Changing sport to: ${sport}, current optimisticCoverUrl: ${optimisticCoverUrl}`)
     setSelectedSport(sport)
     // Update theme based on sport
     const newTheme = SPORT_THEME_MAP[sport] || "badminton"
@@ -1180,7 +1153,7 @@ export function SessionInvite({
         normalizedMapUrl = extracted
       } else if (!normalizedMapUrl.startsWith("http://") && !normalizedMapUrl.startsWith("https://")) {
         // If not an iframe and not a full URL, prepend https://
-        normalizedMapUrl = `https://${normalizedMapUrl}`
+      normalizedMapUrl = `https://${normalizedMapUrl}`
       }
     }
     setEventMapUrl(normalizedMapUrl)
@@ -1217,6 +1190,35 @@ export function SessionInvite({
         })
       }
       reader.readAsDataURL(file)
+    }
+  }
+
+  // Download QR image function
+  const handleDownloadQrImage = () => {
+    if (!paymentQrImage) return
+
+    try {
+      // Convert base64 to blob
+      const base64Data = paymentQrImage.split(',')[1] || paymentQrImage
+      const byteCharacters = atob(base64Data)
+      const byteNumbers = new Array(byteCharacters.length)
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i)
+      }
+      const byteArray = new Uint8Array(byteNumbers)
+      const blob = new Blob([byteArray], { type: 'image/png' })
+
+      // Create download link
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'payment-qr-code.png'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Failed to download QR image:', error)
     }
   }
 
@@ -1301,23 +1303,27 @@ export function SessionInvite({
             setProofImage(compressedDataUrl)
             
             // Create a File object from the compressed data URL for submission
-            // Convert data URL to blob, then to File
-            fetch(compressedDataUrl)
-              .then(res => res.blob())
-              .then(blob => {
-                // Strip metadata by creating a new blob without EXIF
-                const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), { type: 'image/jpeg' })
-                setProofImageFile(compressedFile)
-                
-                // Log final size for debugging
-                const finalKB = (compressedFile.size / 1024).toFixed(1)
-                console.log(`[PaymentProof] Compressed: ${(file.size / 1024).toFixed(1)}KB → ${finalKB}KB`)
-              })
-              .catch(error => {
-                console.error("Error creating compressed file:", error)
-                // Fallback: use original file if compression file creation fails
-                setProofImageFile(file)
-              })
+            // Convert data URL to blob directly (more reliable than fetch)
+            try {
+              // Extract base64 data from data URL (format: data:image/jpeg;base64,/9j/4AAQ...)
+              const base64Data = compressedDataUrl.includes(',') ? compressedDataUrl.split(',')[1] : compressedDataUrl
+              const byteCharacters = atob(base64Data)
+              const byteNumbers = new Array(byteCharacters.length)
+              for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i)
+              }
+              const byteArray = new Uint8Array(byteNumbers)
+              const blob = new Blob([byteArray], { type: 'image/jpeg' })
+              
+              // Create File from blob (strips metadata)
+              const compressedFile = new File([blob], file.name.replace(/\.[^/.]+$/, '.jpg'), { type: 'image/jpeg' })
+              setProofImageFile(compressedFile)
+              
+            } catch (error) {
+              console.error("Error creating compressed file:", error)
+              // Fallback: use original file if compression file creation fails
+              setProofImageFile(file)
+            }
             
             toast({
               title: "Image uploaded",
@@ -1401,7 +1407,7 @@ export function SessionInvite({
         base64Data = proofImage
       } else if (proofImageFile) {
         // Fallback: convert file to base64 (shouldn't happen if compression worked)
-        const reader = new FileReader()
+      const reader = new FileReader()
         const promise = new Promise<string>((resolve, reject) => {
           reader.onloadend = () => {
             resolve(reader.result as string)
@@ -1420,7 +1426,7 @@ export function SessionInvite({
         return
       }
 
-      const { submitPaymentProof } = await import("@/app/session/[id]/actions")
+        const { submitPaymentProof } = await import("@/app/session/[id]/actions")
       
       // Use participant ID from props
       if (!payingForParticipantId) {
@@ -1436,47 +1442,47 @@ export function SessionInvite({
         setIsSubmittingProof(false)
         return
       }
-      
-      const result = await submitPaymentProof(
-        actualSessionId,
+        
+        const result = await submitPaymentProof(
+          actualSessionId,
         payingForParticipantId,
-        base64Data,
+          base64Data,
         proofImageFile?.name || "payment-proof.jpg"
-      )
+        )
 
-      if (result.ok) {
+        if (result.ok) {
         logInfo("upload_success", withTrace({
           storagePath: result.storagePath || null,
           publicUrl: result.publicUrl || null,
           paymentProofId: result.paymentProofId,
         }, traceId))
         
-        // Mark as submitted
-        setProofSubmitted(true)
-        const cacheKey = `sl:paymentSubmitted:${actualSessionId}`
-        localStorage.setItem(cacheKey, "true")
+          // Mark as submitted
+          setProofSubmitted(true)
+          const cacheKey = `sl:paymentSubmitted:${actualSessionId}`
+          localStorage.setItem(cacheKey, "true")
 
-        toast({
-          title: "Payment proof submitted",
-          description: "Your payment proof has been submitted for review.",
-          variant: "success",
-        })
+          toast({
+            title: "Payment proof submitted",
+            description: "Your payment proof has been submitted for review.",
+            variant: "success",
+          })
 
-        // Clear file and preview
-        setProofImageFile(null)
-        setProofImage(null)
-      } else {
+          // Clear file and preview
+          setProofImageFile(null)
+          setProofImage(null)
+        } else {
         logError("upload_failed", withTrace({
           error: result.error,
           stage: "server_action",
         }, traceId))
-        toast({
-          title: "Failed to submit payment proof",
-          description: result.error,
-          variant: "destructive",
-        })
-      }
-      setIsSubmittingProof(false)
+          toast({
+            title: "Failed to submit payment proof",
+            description: result.error,
+            variant: "destructive",
+          })
+        }
+        setIsSubmittingProof(false)
     } catch (error: any) {
       logError("upload_failed", withTrace({
         error: error?.message || "Unknown error",
@@ -1764,11 +1770,6 @@ export function SessionInvite({
 
     if (!isAuthenticated) {
       // Store intent to publish after login
-        console.log("[AUTH] Publish requires login - saving draft and redirect URL", {
-          currentPath: typeof window !== "undefined" ? window.location.pathname : "unknown",
-          hasDraft: !!draftKey,
-        })
-        
       if (typeof window !== "undefined") {
           // Draft is auto-saved via useEffect, so we just need to store publish intent
         sessionStorage.setItem("pending_publish", "true")
@@ -1776,13 +1777,10 @@ export function SessionInvite({
           const returnTo = getCurrentReturnTo()
           // Set post-auth redirect
           setPostAuthRedirect(returnTo)
-          console.log("[AUTH] Publish gated - redirect URL stored", { returnTo })
       }
       setLoginDialogOpen(true)
       return
     }
-      
-      console.log("[AUTH] Publish proceeding - user authenticated", { userId: authUser?.id })
 
     // Check if session is live (status === "open")
     const isLive = sessionStatus === "open"
@@ -1948,7 +1946,6 @@ export function SessionInvite({
         // Clear draft on successful publish
         try {
           localStorage.removeItem(draftKey)
-          console.log("[draft] cleared on publish", { key: draftKey })
         } catch (error) {
           console.error("[draft] clear failed", { key: draftKey, error })
         }
@@ -2102,29 +2099,29 @@ export function SessionInvite({
             eventDate,
             selectedDateDraft: selectedDateDraft ? selectedDateDraft.toISOString() : null,
             selectedTimeDraft,
-            selectedDurationDraft,
-            eventLocation,
-            locationDraft,
-            mapUrlDraft,
-            courtDraft,
-            eventCourt,
-            eventPrice,
-            eventCapacity,
-            hostNameInput,
-            selectedSport,
-            eventDescription,
-            optimisticCoverUrl,
-            containerOverlayEnabled,
-            bankName,
-            accountNumber,
-            accountName,
-            paymentNotes,
-            paymentQrImage,
-            theme,
-            effects,
-          }
-          localStorage.setItem(draftKey, JSON.stringify(draft))
-          console.log("[draft] force saved before login", { key: draftKey })
+          selectedDurationDraft,
+          eventLocation,
+          locationDraft,
+          eventMapUrl,
+          mapUrlDraft,
+          courtDraft,
+          eventCourt,
+          eventPrice,
+          eventCapacity,
+          hostNameInput,
+          selectedSport,
+          eventDescription,
+          optimisticCoverUrl,
+          containerOverlayEnabled,
+          bankName,
+          accountNumber,
+          accountName,
+          paymentNotes,
+          paymentQrImage,
+          theme,
+          effects,
+        }
+        localStorage.setItem(draftKey, JSON.stringify(draft))
         } catch (error) {
           console.error("[draft] force save failed", { key: draftKey, error })
         }
@@ -2134,7 +2131,6 @@ export function SessionInvite({
         const returnTo = getCurrentReturnTo()
         // Set post-auth redirect
         setPostAuthRedirect(returnTo)
-        console.log("[auth] setReturnTo from save draft", { url: returnTo })
       }
       setLoginDialogOpen(true)
       return
@@ -2250,7 +2246,6 @@ export function SessionInvite({
             }
           } catch (error) {
             // If we can't fetch the session, that's okay - it might not exist yet
-            console.log("[handleLoadDraft] Could not fetch session status:", error)
           }
         }
         
@@ -2386,20 +2381,6 @@ export function SessionInvite({
   // Use initialEditMode as PRIMARY source of truth (prop), fallback to state for backward compatibility
   // initialEditMode prop takes precedence because it comes directly from server/route and can't be out of sync
   const mustRenderEditor = initialEditMode === true ? true : (isEditMode === true)
-  
-  // Debug logging to diagnose render gate
-  if (process.env.NODE_ENV === 'development') {
-    console.log('[SessionInvite] Render gate check:', {
-      initialEditMode,
-      isEditMode,
-      mustRenderEditor,
-      isPublished,
-      actualSessionId,
-      demoMode,
-      publishShareSheetOpen,
-      willRenderAnalytics: isPublished && actualSessionId && !demoMode && !publishShareSheetOpen && !mustRenderEditor
-    })
-  }
 
   // If published, show analytics view instead of edit/preview
   // But don't show analytics if share sheet is open (let user see the share sheet first)
@@ -3078,7 +3059,7 @@ export function SessionInvite({
                   rows={1}
                 />
               ) : (
-                <p className={`${mutedText} ${!eventDescription ? "italic opacity-60" : ""} text-sm leading-relaxed`}>
+                <p className={`${mutedText} ${!eventDescription ? "italic opacity-60" : ""} text-sm leading-relaxed whitespace-pre-wrap`}>
                   {eventDescription || "Add a short description for participants"}
                 </p>
               )}
@@ -3329,11 +3310,19 @@ export function SessionInvite({
 
                 {paymentQrImage && (
                   <div className="mb-4">
-                    <img
-                      src={paymentQrImage || "/placeholder.svg"}
-                      alt="Payment QR"
-                      className="w-full max-w-[200px] rounded-lg mx-auto"
-                    />
+                    <div
+                      onClick={() => setQrImageModalOpen(true)}
+                      className="relative w-full max-w-[200px] mx-auto cursor-pointer group"
+                    >
+                      <img
+                        src={paymentQrImage || "/placeholder.svg"}
+                        alt="Payment QR"
+                        className="w-full rounded-lg transition-transform group-hover:scale-105"
+                      />
+                      <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 rounded-lg transition-colors flex items-center justify-center">
+                        <Maximize2 className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -3363,6 +3352,54 @@ export function SessionInvite({
                     </div>
                   )}
                 </div>
+
+                {/* QR Image Modal */}
+                <Dialog open={qrImageModalOpen} onOpenChange={setQrImageModalOpen}>
+                  <DialogContent className={cn(
+                    "sm:max-w-[90vw] max-w-[95vw] p-0 gap-0 overflow-hidden",
+                    uiMode === "dark" ? "bg-slate-900 border-white/10" : "bg-white border-black/10"
+                  )}>
+                    <DialogHeader className="sr-only">
+                      <DialogTitle>Payment QR Code</DialogTitle>
+                    </DialogHeader>
+                    <div className="relative w-full h-auto flex items-center justify-center bg-black/5 p-4">
+                      {/* Download button at top right */}
+                      <button
+                        onClick={handleDownloadQrImage}
+                        className={cn(
+                          "absolute top-4 right-4 z-10 p-3 rounded-full shadow-lg backdrop-blur-sm transition-transform hover:scale-110 active:scale-95",
+                          uiMode === "dark"
+                            ? "bg-white/90 text-black hover:bg-white"
+                            : "bg-black/90 text-white hover:bg-black"
+                        )}
+                        aria-label="Download QR code"
+                      >
+                        <Download className="w-5 h-5" />
+                      </button>
+                      
+                      {/* Close button */}
+                      <button
+                        onClick={() => setQrImageModalOpen(false)}
+                        className={cn(
+                          "absolute top-4 left-4 z-10 p-3 rounded-full shadow-lg backdrop-blur-sm transition-transform hover:scale-110 active:scale-95",
+                          uiMode === "dark"
+                            ? "bg-white/90 text-black hover:bg-white"
+                            : "bg-black/90 text-white hover:bg-black"
+                        )}
+                        aria-label="Close"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+
+                      {/* QR Image */}
+                      <img
+                        src={paymentQrImage || "/placeholder.svg"}
+                        alt="Payment QR Code"
+                        className="max-w-full max-h-[70vh] w-auto h-auto rounded-lg"
+                      />
+                    </div>
+                  </DialogContent>
+                </Dialog>
               </Card>
             </motion.div>
           )}
@@ -3605,7 +3642,7 @@ export function SessionInvite({
             <div>
               <label className={cn(
                 "text-sm mb-2 block",
-                uiMode === "dark" ? "text-white/70" : "text-black/60"
+                uiMode === "dark" ? "text-white" : "text-black/60"
               )}>
                 Location name
               </label>
@@ -3622,11 +3659,25 @@ export function SessionInvite({
               />
             </div>
 
+            <div className="space-y-2 pt-2">
+              <p className={cn(
+                "text-xs",
+                uiMode === "dark" ? "text-white/60" : "text-black/60"
+              )}>
+                Beta: Autocomplete isn't enabled yet to keep costs low. Please type your location manually.
+              </p>
+              <p className={cn(
+                "text-xs",
+                uiMode === "dark" ? "text-white/60" : "text-black/60"
+              )}>
+              </p>
+            </div>
+
             {/* Google Maps Link Input */}
             <div>
               <label className={cn(
                 "text-sm mb-2 block",
-                uiMode === "dark" ? "text-white/70" : "text-black/60"
+                uiMode === "dark" ? "text-white" : "text-black/60"
               )}>
                 Google Maps link (optional)
               </label>
@@ -3661,24 +3712,23 @@ export function SessionInvite({
                 "text-xs",
                 uiMode === "dark" ? "text-white/60" : "text-black/60"
               )}>
-                Beta: Autocomplete isn't enabled yet to keep costs low. Please type your location manually.
-              </p>
-              <p className={cn(
-                "text-xs",
-                uiMode === "dark" ? "text-white/60" : "text-black/60"
-              )}>
-                <strong>How to get the embed code:</strong>
+                <strong>How to get embed code:</strong>
                 <br />
-                1. Go to Google Maps and search for your location
+                1. Visit{" "}
+                <a
+                  href="https://www.atlist.com/embed-code-generator"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={cn(
+                    "underline hover:opacity-80 transition-opacity",
+                    uiMode === "dark" ? "text-lime-400" : "text-lime-600"
+                  )}
+                >
+                  atlist.com/embed-code-generator
+                </a>{" "}
+                and search for your location
                 <br />
-                2. Click "Share" button
-                <br />
-                3. Click "Embed a map" tab
-                <br />
-                4. Copy the entire iframe code and paste it here
-                <br />
-                <br />
-                <strong>Example:</strong> &lt;iframe src="https://www.google.com/maps/embed?pb=..." ...&gt;&lt;/iframe&gt;
+                2. From the Embed Code section press on "Copy to Clipboard"
               </p>
             </div>
           </div>
@@ -4205,8 +4255,8 @@ export function SessionInvite({
                 {/* Subtitle */}
                 <p className={`text-xs ${uiMode === "dark" ? "text-white/70" : "text-black/70"}`}>
                   We'll let you know if a spot opens.
-                </p>
-              </div>
+                    </p>
+                  </div>
             ) : (
               /* Default state - show swipe slider (rsvpState is "none") */
               <div className={`${glassCard} rounded-2xl p-4 shadow-2xl flex gap-3`}>
@@ -4217,14 +4267,6 @@ export function SessionInvite({
                       // Block join if session has started
                       if (hasStarted) {
                         return
-                      }
-                      // Log waitlist intent when session is full
-                      if (isFull && publicCode) {
-                        console.log("[waitlist] session full → user attempting waitlist join", {
-                          publicCode,
-                          capacity: eventCapacity,
-                          joinedCount,
-                        })
                       }
                       // Call the original join handler
                       if (onJoinClick) {

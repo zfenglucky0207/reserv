@@ -35,14 +35,6 @@ async function HostSessionEditContent({
     notFound()
   }
 
-  console.log(`[HostSessionEditContent] Session fetched:`, { 
-    sessionId, 
-    cover_url: session.cover_url,
-    hasCoverUrl: !!session.cover_url,
-    status: session.status,
-    public_code: session.public_code,
-    forceEditMode
-  })
 
   // Determine if session is published
   const isPublished = session.status === "open" && !!session.public_code
@@ -52,13 +44,6 @@ async function HostSessionEditContent({
   const shouldStartInEditMode = forceEditMode || (!isPreviewMode && !isPublished)
   const shouldStartInPreviewMode = isPreviewMode
   
-  console.log(`[HostSessionEditContent] Edit mode decision:`, {
-    forceEditMode,
-    isPreviewMode,
-    isPublished,
-    shouldStartInEditMode,
-    shouldStartInPreviewMode
-  })
 
   return (
     <HostSessionEditClient
@@ -98,7 +83,6 @@ export default async function HostSessionEditPage({
   const isPreviewMode = mode === "preview"
   const forceEditMode = mode === "edit"
   
-  console.log(`[HostSessionEditPage] Query params:`, { mode, isPreviewMode, forceEditMode })
 
   return (
     <main className="min-h-screen sporty-bg">

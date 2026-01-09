@@ -1112,14 +1112,15 @@ export async function submitPaymentProof(
 ): Promise<{ ok: true; paymentProofId: string; storagePath?: string; publicUrl?: string } | { ok: false; error: string }> {
   const traceId = `upload_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
   
-  logInfo("payment_api_start", withTrace({
-    sessionId,
-    participantId,
-    fileName,
-    fileSize: fileData.length,
-  }, traceId))
+  try {
+    logInfo("payment_api_start", withTrace({
+      sessionId,
+      participantId,
+      fileName,
+      fileSize: fileData.length,
+    }, traceId))
 
-  const supabase = await createClient()
+    const supabase = await createClient()
 
   // Verify session exists and is open
   const { data: session, error: sessionError } = await supabase
@@ -1157,16 +1158,27 @@ export async function submitPaymentProof(
     return { ok: false, error: "Participant not found." }
   }
 
+  // Convert base64 to buffer (with error handling)
+  let buffer: Buffer
+  let filePath: string
+  let publicUrl: string
+  
   try {
     // Convert base64 to buffer
     const base64Data = fileData.split(",")[1] || fileData // Remove data:image/... prefix if present
-    const buffer = Buffer.from(base64Data, "base64")
+    
+    // Validate base64 data
+    if (!base64Data || base64Data.length === 0) {
+      throw new Error("Invalid base64 data: empty or missing")
+    }
+    
+    buffer = Buffer.from(base64Data, "base64")
 
     // Generate unique file path
     const fileExt = fileName.split(".").pop() || "jpg"
     // Normalize file extension for content type
     const normalizedExt = fileExt.toLowerCase() === "jpg" || fileExt.toLowerCase() === "jpeg" ? "jpeg" : fileExt.toLowerCase()
-    const filePath = `payment-proofs/${sessionId}/${participantId}/${Date.now()}.${fileExt}`
+    filePath = `payment-proofs/${sessionId}/${participantId}/${Date.now()}.${fileExt}`
 
     // Use admin client for storage upload (bypasses RLS, but we've already validated participant on server)
     const adminClient = createAdminClient()
@@ -1215,7 +1227,7 @@ export async function submitPaymentProof(
 
     // Get public URL using admin client
     const { data: urlData } = adminClient.storage.from("payment-proofs").getPublicUrl(filePath)
-    const publicUrl = urlData.publicUrl
+    publicUrl = urlData.publicUrl
 
     logInfo("payment_validation_result", withTrace({
       participantId,
@@ -1261,9 +1273,31 @@ export async function submitPaymentProof(
     logError("payment_api_failed", withTrace({
       error: error?.message || "Unknown error",
       stack: error?.stack,
-      stage: "exception",
+      stage: "buffer_conversion_or_upload",
     }, traceId))
-    return { ok: false, error: error?.message || "Failed to submit payment proof. Please try again." }
+    
+    // Provide user-friendly error messages
+    const errorMessage = error?.message || "Unknown error"
+    if (errorMessage.includes("Invalid base64") || errorMessage.includes("base64")) {
+      return { ok: false, error: "Invalid image format. Please try uploading again." }
+    }
+    if (errorMessage.includes("too large") || errorMessage.includes("size")) {
+      return { ok: false, error: "Image is too large. Please compress it further." }
+    }
+    if (errorMessage.includes("Buffer")) {
+      return { ok: false, error: "Failed to process image. Please try again." }
+    }
+    
+    return { ok: false, error: errorMessage || "Failed to submit payment proof. Please try again." }
+  }
+  } catch (outerError: any) {
+    // Catch any unexpected errors from the outer try block (validation errors that throw instead of return)
+    logError("payment_api_unhandled_error", withTrace({
+      error: outerError?.message || "Unknown error",
+      stack: outerError?.stack,
+      stage: "unhandled_outer",
+    }, traceId))
+    return { ok: false, error: "An unexpected error occurred. Please try again." }
   }
 }
 

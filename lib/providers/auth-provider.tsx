@@ -106,8 +106,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const { data: subscription } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        console.log("[AUTH] Auth state changed", { event, hasSession: !!session, userId: session?.user?.id });
-        
         setAuthUser(session?.user || undefined);
         
         // Handle redirect after sign-in (client-side fallback for OTP verification)
@@ -118,13 +116,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             const { consumePostAuthRedirect } = await import("@/lib/post-auth-redirect");
             const returnTo = consumePostAuthRedirect();
             if (returnTo && returnTo !== "/" && returnTo !== "/home" && !returnTo.startsWith("/auth")) {
-              console.log("[AUTH] Signed in - redirecting to stored path", { returnTo });
               // Use setTimeout to ensure state updates complete first
               setTimeout(() => {
                 window.location.href = returnTo;
               }, 100);
-            } else {
-              console.log("[AUTH] Signed in - no redirect needed", { returnTo });
             }
           } catch (error) {
             console.error("[AUTH] Redirect failed in auth provider", error);

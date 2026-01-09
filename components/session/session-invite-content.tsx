@@ -6,10 +6,12 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
 import { Input } from "@/components/ui/input"
-import { MapPin, Upload, X, Check, AlertTriangle } from "lucide-react"
+import { MapPin, Upload, X, Check, AlertTriangle, Download, Maximize2 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { getValidGoogleMapsUrl, getMapEmbedSrc } from "@/utils/session-invite-helpers"
 import { PullOutButton } from "@/components/session/pull-out-button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog"
+import { useState } from "react"
 
 interface DemoParticipant {
   name: string
@@ -115,6 +117,36 @@ export function SessionInviteContent({
   inputPlaceholder,
 }: SessionInviteContentProps) {
   const validMapUrl = getValidGoogleMapsUrl(eventMapUrl, eventLocation)
+  const [qrImageModalOpen, setQrImageModalOpen] = useState(false)
+
+  // Download QR image function
+  const handleDownloadQrImage = () => {
+    if (!paymentQrImage) return
+
+    try {
+      // Convert base64 to blob
+      const base64Data = paymentQrImage.split(',')[1] || paymentQrImage
+      const byteCharacters = atob(base64Data)
+      const byteNumbers = new Array(byteCharacters.length)
+      for (let i = 0; i < byteCharacters.length; i++) {
+        byteNumbers[i] = byteCharacters.charCodeAt(i)
+      }
+      const byteArray = new Uint8Array(byteNumbers)
+      const blob = new Blob([byteArray], { type: 'image/png' })
+
+      // Create download link
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = 'payment-qr-code.png'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      console.error('Failed to download QR image:', error)
+    }
+  }
 
   return (
     <motion.div
@@ -140,7 +172,7 @@ export function SessionInviteContent({
               rows={1}
             />
           ) : (
-            <p className={`${mutedText} ${!eventDescription ? "italic opacity-60" : ""} text-sm leading-relaxed`}>
+            <p className={`${mutedText} ${!eventDescription ? "italic opacity-60" : ""} text-sm leading-relaxed whitespace-pre-wrap`}>
               {eventDescription || "Add a short description for participants"}
             </p>
           )}
@@ -154,7 +186,7 @@ export function SessionInviteContent({
           transition={{ duration: 0.4, delay: 0.2 }}
         >
           <Card className={`${glassCard} p-6`}>
-            <h2 className={`text-lg font-semibold ${strongText} mb-2`}>Location</h2>
+            <h2 className={`text-lg font-semibold ${strongText} mb-4`}>Location</h2>
             <p className={`${mutedText} text-sm mb-4`}>{eventLocation}</p>
             {(() => {
               // Demo mode
@@ -388,13 +420,69 @@ export function SessionInviteContent({
 
             {paymentQrImage && (
               <div className="mb-4">
-                <img
-                  src={paymentQrImage || "/placeholder.svg"}
-                  alt="Payment QR"
-                  className="w-full max-w-[200px] rounded-lg mx-auto"
-                />
+                <div
+                  onClick={() => setQrImageModalOpen(true)}
+                  className="relative w-full max-w-[200px] mx-auto cursor-pointer group"
+                >
+                  <img
+                    src={paymentQrImage || "/placeholder.svg"}
+                    alt="Payment QR"
+                    className="w-full rounded-lg transition-transform group-hover:scale-105"
+                  />
+                  <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 rounded-lg transition-colors flex items-center justify-center">
+                    <Maximize2 className="w-6 h-6 text-white opacity-0 group-hover:opacity-100 transition-opacity drop-shadow-lg" />
+                  </div>
+                </div>
               </div>
             )}
+
+            {/* QR Image Modal */}
+            <Dialog open={qrImageModalOpen} onOpenChange={setQrImageModalOpen}>
+              <DialogContent className={cn(
+                "sm:max-w-[90vw] max-w-[95vw] p-0 gap-0 overflow-hidden",
+                uiMode === "dark" ? "bg-slate-900 border-white/10" : "bg-white border-black/10"
+              )}>
+                <DialogHeader className="sr-only">
+                  <DialogTitle>Payment QR Code</DialogTitle>
+                </DialogHeader>
+                <div className="relative w-full h-auto flex items-center justify-center bg-black/5 p-4">
+                  {/* Download button at top right */}
+                  <button
+                    onClick={handleDownloadQrImage}
+                    className={cn(
+                      "absolute top-4 right-4 z-10 p-3 rounded-full shadow-lg backdrop-blur-sm transition-transform hover:scale-110 active:scale-95",
+                      uiMode === "dark"
+                        ? "bg-white/90 text-black hover:bg-white"
+                        : "bg-black/90 text-white hover:bg-black"
+                    )}
+                    aria-label="Download QR code"
+                  >
+                    <Download className="w-5 h-5" />
+                  </button>
+                  
+                  {/* Close button */}
+                  <button
+                    onClick={() => setQrImageModalOpen(false)}
+                    className={cn(
+                      "absolute top-4 left-4 z-10 p-3 rounded-full shadow-lg backdrop-blur-sm transition-transform hover:scale-110 active:scale-95",
+                      uiMode === "dark"
+                        ? "bg-white/90 text-black hover:bg-white"
+                        : "bg-black/90 text-white hover:bg-black"
+                    )}
+                    aria-label="Close"
+                  >
+                    <X className="w-5 h-5" />
+                  </button>
+
+                  {/* QR Image */}
+                  <img
+                    src={paymentQrImage || "/placeholder.svg"}
+                    alt="Payment QR Code"
+                    className="max-w-full max-h-[70vh] w-auto h-auto rounded-lg"
+                  />
+                </div>
+              </DialogContent>
+            </Dialog>
 
             <div className="space-y-3">
               {bankName && (
