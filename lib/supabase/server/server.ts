@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 
 import { createServerClient } from "@supabase/ssr";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { SupabaseClient } from "@supabase/supabase-js";
 
 export async function createClient() {
@@ -60,25 +61,14 @@ export function createAdminClient() {
     )
   }
   
-  return createServerClient(
-    url,
-    serviceRoleKey,
-    {
-      global: {
-        headers: {
-          "x-service-role": "true",
-        },
-      },
-      cookies: {
-        getAll() {
-          return [];
-        },
-        setAll() {
-          // No-op
-        },
-      },
-    }
-  );
+  // Use createClient from @supabase/supabase-js directly for admin client
+  // This ensures service role key properly bypasses RLS
+  return createSupabaseClient(url, serviceRoleKey, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
 }
 
 export async function createClientFromJwt(jwt: string) {
