@@ -33,19 +33,20 @@ export async function createClient() {
  * Create an anonymous Supabase client that doesn't attempt to refresh sessions.
  * Use this for public endpoints where user authentication is not required.
  * This avoids "Invalid Refresh Token" errors when cookies contain stale tokens.
+ * 
+ * Uses createClient directly (not createServerClient) to ensure truly anonymous access
+ * without any session/cookie handling that might interfere with RLS policies.
+ * This is critical for Vercel deployments where createServerClient may behave differently.
  */
-export async function createAnonymousClient() {
-  return createServerClient(
+export function createAnonymousClient() {
+  return createSupabaseClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
-      cookies: {
-        getAll() {
-          return []; // Return empty cookies - no auth attempted
-        },
-        setAll() {
-          // No-op - don't set any cookies
-        },
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false,
       },
     }
   );

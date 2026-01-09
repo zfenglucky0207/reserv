@@ -138,7 +138,7 @@ type CapacityCheck = {
  * Get session by public code
  */
 async function getSessionByPublicCode(
-  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  supabase: ReturnType<typeof createAnonymousClient>,
   publicCode: string
 ): Promise<{ session: Session } | { error: string }> {
   const { data, error } = await supabase
@@ -177,7 +177,7 @@ async function getSessionByPublicCode(
  * Check session capacity and waitlist status
  */
 async function checkCapacity(
-  supabase: Awaited<ReturnType<typeof createAnonymousClient>>,
+  supabase: ReturnType<typeof createAnonymousClient>,
   sessionId: string,
   capacity: number | null,
   waitlistEnabled: boolean
@@ -400,11 +400,11 @@ export async function joinSession(
   const trimmedPhone = phone?.trim() || null
 
     // Create Supabase clients
-    let supabase: Awaited<ReturnType<typeof createAnonymousClient>>
+    let supabase: ReturnType<typeof createAnonymousClient>
     let adminSupabase: ReturnType<typeof createAdminClient>
 
     try {
-      supabase = await createAnonymousClient()
+      supabase = createAnonymousClient()
     } catch (error: any) {
       logError("join_supabase_client_creation_failed", withTrace({ error: error?.message }, finalTraceId))
       return { ok: false, error: "Server configuration error", traceId: finalTraceId }
@@ -965,7 +965,7 @@ export async function pullOutFromSession({
   reason: string
 }): Promise<{ ok: true } | { ok: false; error: string }> {
   const traceId = newTraceId("pullout")
-  const supabase = await createAnonymousClient()
+  const supabase = createAnonymousClient()
   const adminClient = createAdminClient()
 
   logInfo("pullout_start", withTrace({
@@ -1273,7 +1273,7 @@ export async function submitPaymentProof(
     // Format: [{"participant_id": "uuid1"}, {"participant_id": "uuid2"}]
     const coveredParticipantsJson = coveredParticipantIds.map(id => ({ participant_id: id }))
 
-    const anonClient = await createAnonymousClient()
+    const anonClient = createAnonymousClient()
     const { data: proofData, error: insertError } = await anonClient
       .from("payment_proofs")
       .insert({

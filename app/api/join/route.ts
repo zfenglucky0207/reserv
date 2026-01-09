@@ -350,7 +350,7 @@ export async function POST(req: Request) {
     let adminSupabase: ReturnType<typeof createAdminClient>
 
     try {
-      supabase = await createAnonymousClient()
+      supabase = createAnonymousClient()
     } catch (error: any) {
       logError("join_supabase_client_creation_failed", withTrace({ error: error?.message }, traceId))
       return NextResponse.json(
