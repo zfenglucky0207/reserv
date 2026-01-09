@@ -1102,10 +1102,12 @@ export async function submitPaymentProof(
       fileSize: fileData.length,
     }, traceId))
 
-    const supabase = await createClient()
+    // Use admin client for all validation and insert operations
+    // This bypasses RLS which is appropriate since we're doing server-side validation
+    const adminClient = createAdminClient()
 
   // Verify session exists and is open
-  const { data: session, error: sessionError } = await supabase
+  const { data: session, error: sessionError } = await adminClient
     .from("sessions")
     .select("id, status")
     .eq("id", sessionId)
@@ -1130,7 +1132,7 @@ export async function submitPaymentProof(
   }
 
   // Verify paid_by participant exists (any status - users can pay without joining first)
-  const { data: paidByParticipant, error: paidByError } = await supabase
+  const { data: paidByParticipant, error: paidByError } = await adminClient
     .from("participants")
     .select("id, status")
     .eq("id", paidByParticipantId)
@@ -1150,7 +1152,7 @@ export async function submitPaymentProof(
   }
 
   // CRITICAL: Validate ALL covered participants belong to this session and are active
-  const { data: coveredParticipants, error: coveredError } = await supabase
+  const { data: coveredParticipants, error: coveredError } = await adminClient
     .from("participants")
     .select("id, session_id, status")
     .eq("session_id", sessionId)
@@ -1267,23 +1269,36 @@ export async function submitPaymentProof(
       validated: true,
     }, traceId))
 
-    // Insert payment_proofs record using anonymous client
-    // RLS policy "anyone_can_insert_payment_proofs" allows anyone (anon or authenticated) to insert
+    // Insert payment_proofs record using admin client
+    // We use admin client because:
+    // 1. We've already validated all participants exist and belong to the session on the server
+    // 2. RLS policy checks on participants table might fail due to status restrictions for anon users
+    // 3. This is a server-side operation with proper validation, so bypassing RLS is safe and appropriate
     // Format covered_participant_ids as JSONB array
     // Format: [{"participant_id": "uuid1"}, {"participant_id": "uuid2"}]
     const coveredParticipantsJson = coveredParticipantIds.map(id => ({ participant_id: id }))
 
-    const anonClient = createAnonymousClient()
-    const { data: proofData, error: insertError } = await anonClient
+    // Debug logging to verify insert payload
+    const insertPayload = {
+      session_id: sessionId,
+      participant_id: paidByParticipantId, // Keep for backward compatibility (who uploaded)
+      covered_participant_ids: coveredParticipantsJson, // NEW: Who is covered by this payment
+      proof_image_url: publicUrl,
+      payment_status: "pending_review",
+      ocr_status: "pending",
+    }
+    
+    logInfo("inserting_payment_proof", withTrace({
+      session_id: sessionId,
+      participant_id: paidByParticipantId,
+      covered_participant_ids: coveredParticipantIds,
+      proof_image_url: publicUrl ? "present" : "missing",
+      stage: "db_insert",
+    }, traceId))
+
+    const { data: proofData, error: insertError } = await adminClient
       .from("payment_proofs")
-      .insert({
-        session_id: sessionId,
-        participant_id: paidByParticipantId, // Keep for backward compatibility (who uploaded)
-        covered_participant_ids: coveredParticipantsJson, // NEW: Who is covered by this payment
-        proof_image_url: publicUrl,
-        payment_status: "pending_review",
-        ocr_status: "pending",
-      })
+      .insert(insertPayload)
       .select("id")
       .single()
 
