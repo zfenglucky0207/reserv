@@ -61,6 +61,8 @@ import { SessionInviteRSVPDock } from "@/components/session/session-invite-rsvp-
 import { PullOutButton } from "@/components/session/pull-out-button"
 import { toggleHostParticipation, getHostParticipationStatus } from "@/app/session/[id]/actions"
 import { CheckCircle2, Circle } from "lucide-react"
+import { LiveInviteGuardModal } from "@/components/host/live-invite-guard-modal"
+import { getHostLiveSessions } from "@/app/host/sessions/[id]/actions"
 
 interface DemoParticipant {
   name: string
@@ -154,6 +156,18 @@ export function SessionInvite({
   const [actualSessionId, setActualSessionId] = useState<string | undefined>(sessionId) // Store actual session ID (may be updated after creation)
   const [scrolled, setScrolled] = useState(false)
   const [loginDialogOpen, setLoginDialogOpen] = useState(false)
+  const [liveInviteModalOpen, setLiveInviteModalOpen] = useState(false)
+  const [liveSessions, setLiveSessions] = useState<Array<{
+    id: string
+    title: string
+    start_at: string
+    location: string | null
+    capacity: number | null
+    cover_url: string | null
+    sport: "badminton" | "pickleball" | "volleyball" | "other"
+    host_slug: string | null
+    public_code: string | null
+  }>>([])
   
   // Celebration animation state for joined state
   const [shouldCelebrate, setShouldCelebrate] = useState(false)
@@ -472,7 +486,7 @@ export function SessionInvite({
   const [hostNameInput, setHostNameInput] = useState(initialHostName || "")
   const [isHostNameEditing, setIsHostNameEditing] = useState(false)
   const [isHostNameSaving, setIsHostNameSaving] = useState(false)
-  const [isHostJoining, setIsHostJoining] = useState(true) // Default to true (host is joining)
+  const [hostWillJoin, setHostWillJoin] = useState(false) // Default to false (intent only, not action)
   // Initialize sport from prop or default to "Badminton"
   // Normalize to capitalized form for UI consistency
   const getSportDisplayName = (sport: string | null | undefined): string => {
@@ -695,6 +709,7 @@ export function SessionInvite({
   const [proofImageFile, setProofImageFile] = useState<File | null>(null) // Store actual File object for upload
   const [isSubmittingProof, setIsSubmittingProof] = useState(false)
   const [proofSubmitted, setProofSubmitted] = useState(false)
+  const hasAutoSubmittedRef = useRef(false) // Track if we've already auto-submitted for current proof image
 
   const [theme, setTheme] = useState("badminton")
   const [effects, setEffects] = useState({
@@ -1304,6 +1319,8 @@ export function SessionInvite({
             
             // Store compressed data URL for preview and submission
             setProofImage(compressedDataUrl)
+            // Reset submitted state when new image is uploaded
+            setProofSubmitted(false)
             
             // Create a File object from the compressed data URL for submission
             // Convert data URL to blob directly (more reliable than fetch)
@@ -1513,6 +1530,38 @@ export function SessionInvite({
     }
   }
 
+  // Auto-submit payment proof when participants are selected (if proof image already uploaded)
+  useEffect(() => {
+    // Only auto-submit if:
+    // 1. Participants were just selected (payingForParticipantIds is not empty)
+    // 2. There's a proof image already uploaded
+    // 3. Proof hasn't been submitted yet
+    // 4. We're not already submitting
+    // 5. We haven't already auto-submitted for this proof image
+    if (
+      payingForParticipantIds.length > 0 &&
+      (proofImage || proofImageFile) &&
+      !proofSubmitted &&
+      !isSubmittingProof &&
+      actualSessionId &&
+      !hasAutoSubmittedRef.current
+    ) {
+      // Mark as auto-submitted to prevent duplicate submissions
+      hasAutoSubmittedRef.current = true
+      // Auto-submit the payment proof
+      handleSubmitPaymentProof()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [payingForParticipantIds.length, proofImage, proofImageFile, proofSubmitted, isSubmittingProof, actualSessionId])
+
+  // Reset auto-submit flag when proof image changes (new upload)
+  useEffect(() => {
+    if (proofImage || proofImageFile) {
+      // Reset flag when new proof image is uploaded
+      hasAutoSubmittedRef.current = false
+    }
+  }, [proofImage, proofImageFile])
+
   const handleCostBlur = () => {
     toast({
       title: "Updated",
@@ -1579,19 +1628,23 @@ export function SessionInvite({
     }
   }, [displayHostName, isHostNameEditing])
 
-  // Check host participation status on mount
+  // Load host participation intent from database
   useEffect(() => {
-    const checkHostParticipation = async () => {
-      if (!actualSessionId || !isEditMode) return
+    const loadHostParticipationStatus = async () => {
+      if (!actualSessionId || !isEditMode || isPreviewMode) return
       
-      const result = await getHostParticipationStatus(actualSessionId)
-      if (result.ok) {
-        setIsHostJoining(result.isParticipating)
+      try {
+        const result = await getHostParticipationStatus(actualSessionId)
+        if (result.ok) {
+          setHostWillJoin(result.hostWillJoin)
+        }
+      } catch (error) {
+        console.error("[loadHostParticipationStatus] Error:", error)
       }
     }
     
-    checkHostParticipation()
-  }, [actualSessionId, isEditMode])
+    loadHostParticipationStatus()
+  }, [actualSessionId, isEditMode, isPreviewMode])
 
   // Clear errors when fields become valid
   useEffect(() => {
@@ -1936,11 +1989,38 @@ export function SessionInvite({
         })
 
         if (!result.ok) {
-          toast({
-            title: "Publish failed",
-            description: result.error || "Failed to publish session. Please try again.",
-            variant: "destructive",
-          })
+          // Check if error is about limit reached - show live invite modal instead of toast
+          if (result.error?.includes("Limit reached") || result.error?.includes("2 live invites")) {
+            // Fetch live sessions and open the modal
+            try {
+              const liveSessionsResult = await getHostLiveSessions()
+              if (liveSessionsResult.ok) {
+                setLiveSessions(liveSessionsResult.sessions)
+                setLiveInviteModalOpen(true)
+              } else {
+                // Fallback to toast if we can't fetch sessions
+                toast({
+                  title: "Publish failed",
+                  description: result.error || "Failed to publish session. Please try again.",
+                  variant: "destructive",
+                })
+              }
+            } catch (error) {
+              // Fallback to toast on error
+              toast({
+                title: "Publish failed",
+                description: result.error || "Failed to publish session. Please try again.",
+                variant: "destructive",
+              })
+            }
+          } else {
+            // Other errors - show toast as usual
+            toast({
+              title: "Publish failed",
+              description: result.error || "Failed to publish session. Please try again.",
+              variant: "destructive",
+            })
+          }
           return
         }
 
@@ -3066,38 +3146,82 @@ export function SessionInvite({
                             placeholder={getUserProfileName() ?? "Your name"}
                           />
                           <button
-                            onClick={async () => {
-                              if (!actualSessionId || !hostNameInput.trim()) return
-                              const newIsJoining = !isHostJoining
-                              setIsHostJoining(newIsJoining)
-                              const result = await toggleHostParticipation(actualSessionId, hostNameInput.trim(), newIsJoining)
-                              if (!result.ok) {
-                                setIsHostJoining(!newIsJoining) // Revert on error
+                            type="button"
+                            onClick={async (e) => {
+                              e.preventDefault()
+                              e.stopPropagation()
+                              
+                              // Get session ID from pathname (same logic as saveHostName)
+                              let sessionIdToUse: string | undefined = actualSessionId
+                              
+                              if (!sessionIdToUse && pathname.includes("/host/sessions/")) {
+                                // Extract ID from /host/sessions/[id]/edit
+                                const parts = pathname.split("/")
+                                const sessionsIndex = parts.indexOf("sessions")
+                                if (sessionsIndex >= 0 && parts[sessionsIndex + 1]) {
+                                  sessionIdToUse = parts[sessionsIndex + 1]
+                                }
+                              }
+                              
+                              if (!sessionIdToUse || sessionIdToUse === "new" || sessionIdToUse === "edit") {
                                 toast({
-                                  title: "Failed to update participation",
+                                  title: "Error",
+                                  description: "Session not found. Please save the session first.",
+                                  variant: "destructive",
+                                })
+                                return
+                              }
+                              
+                              if (!hostNameInput.trim()) {
+                                toast({
+                                  title: "Error",
+                                  description: "Please enter a host name first.",
+                                  variant: "destructive",
+                                })
+                                return
+                              }
+                              
+                              const newHostWillJoin = !hostWillJoin
+                              // Optimistically update UI
+                              setHostWillJoin(newHostWillJoin)
+                              const result = await toggleHostParticipation(sessionIdToUse, newHostWillJoin)
+                              if (!result.ok) {
+                                // Revert on error
+                                setHostWillJoin(!newHostWillJoin)
+                                toast({
+                                  title: "Failed to update participation intent",
                                   description: result.error,
                                   variant: "destructive",
                                 })
                               } else {
+                                // State already updated optimistically, just show success
                                 toast({
-                                  title: newIsJoining ? "Host added to participants" : "Host removed from participants",
+                                  title: newHostWillJoin ? "You'll join when this session is published" : "You won't join this session",
                                   variant: "success",
                                 })
                               }
                             }}
+                            disabled={isHostNameSaving}
                             className={cn(
-                              "flex-shrink-0 p-1.5 rounded-full transition-all hover:scale-110 active:scale-95",
-                              isHostJoining
-                                ? "bg-lime-500/20 text-lime-400 hover:bg-lime-500/30"
-                                : "bg-white/10 text-white/60 hover:bg-white/20"
+                              "px-4 py-2 rounded-lg text-sm font-medium transition-all hover:scale-105 active:scale-95 relative z-10",
+                              hostWillJoin
+                                ? "bg-lime-500/20 text-lime-400 border border-lime-500/40 hover:bg-lime-500/30 hover:border-lime-500/60"
+                                : "bg-white/10 text-white/70 border border-white/20 hover:bg-white/20 hover:border-white/30",
+                              isHostNameSaving && "opacity-50 cursor-not-allowed",
+                              !hostNameInput.trim() && "opacity-60"
                             )}
-                            title={isHostJoining ? "Host is joining (click to remove)" : "Host is not joining (click to add)"}
-                            aria-label={isHostJoining ? "Remove host from participants" : "Add host to participants"}
+                            aria-label={hostWillJoin ? "Host is joining (click to change)" : "Host not joining (click to change)"}
                           >
-                            {isHostJoining ? (
-                              <CheckCircle2 className="w-4 h-4" />
+                            {hostWillJoin ? (
+                              <span className="flex items-center gap-2">
+                                <CheckCircle2 className="w-4 h-4" />
+                                Joining
+                              </span>
                             ) : (
-                              <Circle className="w-4 h-4" />
+                              <span className="flex items-center gap-2">
+                                <Circle className="w-4 h-4" />
+                                Absent
+                              </span>
                             )}
                           </button>
                         </div>
@@ -3208,7 +3332,13 @@ export function SessionInvite({
                   <h2 className={`text-lg font-semibold ${strongText}`}>Going</h2>
                   <div className="flex items-center gap-2">
                   <Badge className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border-[var(--theme-accent)]/30">
-                      {joinedCount > 0 ? joinedCount : demoParticipants.length} / {eventCapacity || "∞"}
+                      {(() => {
+                        // In preview mode, add host optimistically if hostWillJoin === true
+                        const previewParticipants = isPreviewMode && hostWillJoin && displayHostName
+                          ? [...demoParticipants, { name: displayHostName, avatar: null }]
+                          : demoParticipants
+                        return joinedCount > 0 ? joinedCount : previewParticipants.length
+                      })()} / {eventCapacity || "∞"}
                   </Badge>
                     {isFull && eventCapacity && eventCapacity > 0 && (
                       <Badge className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold bg-red-500/20 text-red-200 border border-red-500/30 backdrop-blur">
@@ -3218,11 +3348,20 @@ export function SessionInvite({
                     )}
                   </div>
                 </div>
-                {demoParticipants.length === 0 ? (
-                  <p className={`text-sm ${mutedText} px-1`}>No one has joined so far.</p>
-                ) : (
-                  <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
-                    {demoParticipants.map((participant, i) => {
+                {(() => {
+                  // In preview mode, add host optimistically if hostWillJoin === true
+                  // DO NOT read from participants table - only use host_will_join flag
+                  const previewParticipants = isPreviewMode && hostWillJoin && displayHostName
+                    ? [...demoParticipants, { name: displayHostName, avatar: null }]
+                    : demoParticipants
+                  
+                  if (previewParticipants.length === 0) {
+                    return <p className={`text-sm ${mutedText} px-1`}>No one has joined so far.</p>
+                  }
+                  
+                  return (
+                    <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
+                      {previewParticipants.map((participant, i) => {
                       const initial = (participant.name?.trim()?.[0] ?? "?").toUpperCase()
                       return (
                         <motion.div
@@ -3254,8 +3393,9 @@ export function SessionInvite({
                         </motion.div>
                       )
                     })}
-                  </div>
-                )}
+                    </div>
+                  )
+                })()}
 
                 {/* Waitlist section - shown below joined participants */}
                 {!isEditMode && !isPreviewMode && waitlist && waitlist.length > 0 && (
@@ -4158,7 +4298,29 @@ export function SessionInvite({
         description={isShareFromButton ? "Share your invite link with participants." : undefined}
       />
 
-
+      {/* Live Invite Guard Modal - Shows when limit is reached */}
+      <LiveInviteGuardModal
+        open={liveInviteModalOpen}
+        onOpenChange={setLiveInviteModalOpen}
+        liveSessions={liveSessions}
+        uiMode={uiMode}
+        onContinueCreating={async () => {
+          // After unpublishing, retry publish
+          setLiveInviteModalOpen(false)
+          // The publish will be retried by the user clicking publish again
+        }}
+        userId={authUser?.id || null}
+        onSessionsUpdate={(updatedSessions) => {
+          setLiveSessions(updatedSessions)
+        }}
+        onUnpublishSuccess={async () => {
+          // After successful unpublish, close modal and allow user to retry publish
+          setLiveInviteModalOpen(false)
+          // Refresh to update session count
+          router.refresh()
+        }}
+        isLimitReached={true}
+      />
 
       {/* Sticky RSVP Dock - Only show in preview mode or when not in edit mode */}
       <AnimatePresence>

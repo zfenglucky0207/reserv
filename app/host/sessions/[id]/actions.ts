@@ -715,6 +715,15 @@ export async function publishSession(
     return { ok: false, error: "Failed to generate public code" }
   }
 
+  // Get host_will_join before updating (to check if host should be added as participant)
+  const { data: sessionBeforeUpdate } = await supabase
+    .from("sessions")
+    .select("host_will_join, host_name")
+    .eq("id", actualSessionId)
+    .single()
+
+  const hostWillJoin = sessionBeforeUpdate?.host_will_join ?? false
+
   // Update session with public_code, host_slug, and status = 'open'
   const { error: updateError } = await supabase
     .from("sessions")
@@ -732,6 +741,44 @@ export async function publishSession(
 
   if (updateError) {
     return { ok: false, error: updateError.message || "Failed to publish session" }
+  }
+
+  // If host_will_join === true, insert host as participant (only on publish)
+  if (hostWillJoin) {
+    const adminClient = createAdminClient()
+    
+    // Get user email
+    const { data: { user } } = await supabase.auth.getUser()
+    const userEmail = user?.email || null
+    const hostName = sessionBeforeUpdate?.host_name || sessionData.hostName
+
+    if (userEmail) {
+      // Check if host is already a participant (idempotent)
+      const { data: existingParticipant } = await adminClient
+        .from("participants")
+        .select("id")
+        .eq("session_id", actualSessionId)
+        .eq("contact_email", userEmail)
+        .maybeSingle()
+
+      if (!existingParticipant) {
+        // Insert host as participant
+        const { error: insertError } = await adminClient
+          .from("participants")
+          .insert({
+            session_id: actualSessionId,
+            display_name: hostName,
+            contact_email: userEmail,
+            status: "confirmed",
+            profile_id: userId, // Use user ID as profile_id for hosts
+          })
+
+        if (insertError) {
+          // Log error but don't fail publish - host can be added manually later
+          console.error("[publishSession] Failed to add host as participant:", insertError)
+        }
+      }
+    }
   }
 
   // Revalidate paths

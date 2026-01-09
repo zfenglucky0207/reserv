@@ -531,15 +531,6 @@ export function SessionInviteContent({
                 <p className={`text-sm font-medium ${strongText} mb-1`}>Payment proof submitted</p>
                 <p className={`text-xs ${mutedText}`}>Your payment proof is being reviewed by the host.</p>
               </div>
-            ) : rsvpState === "waitlisted" ? (
-              <div className="text-center py-6">
-                <p className={`text-sm ${mutedText} mb-2`}>
-                  Payment can be made once you're confirmed from the waitlist.
-                </p>
-                <p className={`text-xs ${mutedText}`}>
-                  We'll notify you if a spot opens up.
-                </p>
-              </div>
             ) : (
               <>
                 {/* Payment upload - available to anyone (not in host preview mode) */}

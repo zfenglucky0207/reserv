@@ -541,7 +541,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   // Track if we've already attempted to open the payment dialog for this session start
   const hasAttemptedPaymentDialogRef = useRef(false)
 
-  // Auto-open payment dialog when session starts and user has joined with unpaid participants
+  // Auto-open payment dialog when session starts and there are unpaid participants
   useEffect(() => {
     console.log("[payment] useEffect triggered", {
       hasSession: !!session,
@@ -652,12 +652,12 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       console.log("[payment] Already attempted to open dialog, skipping")
     }
   }, [
-    hasStarted,
-    storedParticipantInfo?.name, // Use name for stability
+    hasStarted, // Include hasStarted to trigger when session starts
+    storedParticipantInfo?.name ?? null, // Use name for stability, ensure it's never undefined
     unpaidParticipants.length,
     isLoadingUnpaid,
-    publicCode,
-    session?.id,
+    publicCode ?? null, // Ensure it's never undefined
+    session?.id ?? null, // Ensure it's never undefined
     makePaymentDialogOpen, // Include to prevent re-opening if already open
   ])
 
@@ -1078,6 +1078,8 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   }
 
   // Handle Make Payment - logged-in users skip dialog, guests see dialog
+  // Note: Payment dialog can be opened anytime to allow payment proof upload before session starts
+  // The auto-open dialog is restricted to after session starts
   const handleMakePaymentClick = async () => {
     const traceId = newTraceId("pay")
     
@@ -1090,19 +1092,6 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       publicCode,
       sessionId: session.id,
     }, traceId))
-    
-    if (!hasStarted) {
-      logWarn("make_payment_blocked", withTrace({
-        reason: "session_not_started",
-        stage: "validation",
-      }, traceId))
-      toast({
-        title: "Payment not available",
-        description: "Payment can only be made once the session starts.",
-        variant: "destructive",
-      })
-      return
-    }
 
     if (!publicCode) {
       logError("make_payment_blocked", withTrace({

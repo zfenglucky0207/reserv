@@ -3,7 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Share2, Sparkles } from "lucide-react"
+import { Share2, Sparkles, CreditCard } from "lucide-react"
 import { SwipeToJoinSlider } from "./swipe-to-join-slider"
 
 interface SessionInviteRSVPDockProps {
@@ -112,30 +112,65 @@ export function SessionInviteRSVPDock({
                 "shadow-[0_0_0_1px_rgba(16,185,129,0.12)] shadow-emerald-500/10",
                 isPreviewMode && "pointer-events-none"
               )}>
-                {/* Share icon - top-right corner */}
+                {/* Action buttons - top-right corner */}
                 {actualSessionId && !demoMode && (
-                  <Button
-                    onClick={(e) => {
-                      if (isPreviewMode) {
-                        e.preventDefault()
-                        return
-                      }
-                      onShareInviteLink()
-                    }}
-                    variant="ghost"
-                    size="icon"
-                    disabled={isPreviewMode}
-                    className={cn(
-                      "absolute top-3 right-3 h-11 w-11 rounded-full",
-                      uiMode === "dark"
-                        ? "text-white hover:bg-white/10"
-                        : "text-black hover:bg-black/10",
-                      isPreviewMode && "opacity-50 cursor-not-allowed"
+                  <div className="absolute top-3 right-3 flex items-center gap-2">
+                    {/* Make Payment button - available anytime */}
+                    {onMakePaymentClick && (
+                      <Button
+                        onClick={(e) => {
+                          if (isPreviewMode) {
+                            e.preventDefault()
+                            return
+                          }
+                          onMakePaymentClick()
+                          // Scroll to payment section after a short delay
+                          setTimeout(() => {
+                            const paymentSection = document.querySelector('[data-payment-section]')
+                            if (paymentSection) {
+                              paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                            }
+                          }, 300)
+                        }}
+                        variant="ghost"
+                        size="icon"
+                        disabled={isPreviewMode}
+                        className={cn(
+                          "h-11 w-11 rounded-full",
+                          uiMode === "dark"
+                            ? "text-white hover:bg-white/10"
+                            : "text-black hover:bg-black/10",
+                          isPreviewMode && "opacity-50 cursor-not-allowed"
+                        )}
+                        aria-label="Make payment"
+                        title="Make payment"
+                      >
+                        <CreditCard className="h-5 w-5" />
+                      </Button>
                     )}
-                    aria-label="Share invite link"
-                  >
-                    <Share2 className="h-5 w-5" />
-                  </Button>
+                    <Button
+                      onClick={(e) => {
+                        if (isPreviewMode) {
+                          e.preventDefault()
+                          return
+                        }
+                        onShareInviteLink()
+                      }}
+                      variant="ghost"
+                      size="icon"
+                      disabled={isPreviewMode}
+                      className={cn(
+                        "h-11 w-11 rounded-full",
+                        uiMode === "dark"
+                          ? "text-white hover:bg-white/10"
+                          : "text-black hover:bg-black/10",
+                        isPreviewMode && "opacity-50 cursor-not-allowed"
+                      )}
+                      aria-label="Share invite link"
+                    >
+                      <Share2 className="h-5 w-5" />
+                    </Button>
+                  </div>
                 )}
 
                 {/* Title and subtitle - centered content */}
@@ -188,34 +223,69 @@ export function SessionInviteRSVPDock({
                 "shadow-[0_0_0_1px_rgba(245,158,11,0.12)] shadow-amber-500/10",
                 isPreviewMode && "pointer-events-none"
               )}>
-                {/* Title and share button - top row */}
+                {/* Title and action buttons - top row */}
                 <div className="flex items-center justify-between gap-2">
                   <p className={`text-base font-semibold ${uiMode === "dark" ? "text-white" : "text-black"}`}>
                     You're on the waitlist ✅
                   </p>
                   {actualSessionId && !demoMode && (
-                    <Button
-                      onClick={(e) => {
-                        if (isPreviewMode) {
-                          e.preventDefault()
-                          return
-                        }
-                        onShareInviteLink()
-                      }}
-                      variant="ghost"
-                      size="icon"
-                      disabled={isPreviewMode}
-                      className={cn(
-                        "h-8 w-8 rounded-full shrink-0",
-                        uiMode === "dark"
-                          ? "text-white hover:bg-white/10"
-                          : "text-black hover:bg-black/10",
-                        isPreviewMode && "opacity-50 cursor-not-allowed"
+                    <div className="flex items-center gap-2">
+                      {/* Make Payment button - available anytime */}
+                      {onMakePaymentClick && (
+                        <Button
+                          onClick={(e) => {
+                            if (isPreviewMode) {
+                              e.preventDefault()
+                              return
+                            }
+                            onMakePaymentClick()
+                            // Scroll to payment section after a short delay
+                            setTimeout(() => {
+                              const paymentSection = document.querySelector('[data-payment-section]')
+                              if (paymentSection) {
+                                paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                              }
+                            }, 300)
+                          }}
+                          variant="ghost"
+                          size="icon"
+                          disabled={isPreviewMode}
+                          className={cn(
+                            "h-8 w-8 rounded-full shrink-0",
+                            uiMode === "dark"
+                              ? "text-white hover:bg-white/10"
+                              : "text-black hover:bg-black/10",
+                            isPreviewMode && "opacity-50 cursor-not-allowed"
+                          )}
+                          aria-label="Make payment"
+                          title="Make payment"
+                        >
+                          <CreditCard className="h-5 w-5" />
+                        </Button>
                       )}
-                      aria-label="Share invite link"
-                    >
-                      <Share2 className="h-5 w-5" />
-                    </Button>
+                      <Button
+                        onClick={(e) => {
+                          if (isPreviewMode) {
+                            e.preventDefault()
+                            return
+                          }
+                          onShareInviteLink()
+                        }}
+                        variant="ghost"
+                        size="icon"
+                        disabled={isPreviewMode}
+                        className={cn(
+                          "h-8 w-8 rounded-full shrink-0",
+                          uiMode === "dark"
+                            ? "text-white hover:bg-white/10"
+                            : "text-black hover:bg-black/10",
+                          isPreviewMode && "opacity-50 cursor-not-allowed"
+                        )}
+                        aria-label="Share invite link"
+                      >
+                        <Share2 className="h-5 w-5" />
+                      </Button>
+                    </div>
                   )}
                 </div>
                 {/* Subtitle */}
@@ -247,6 +317,17 @@ export function SessionInviteRSVPDock({
                         onJoinClick()
                       }
                     }}
+                    onPayment={onMakePaymentClick ? () => {
+                      if (isPreviewMode) return
+                      onMakePaymentClick()
+                      // Scroll to payment section after a short delay
+                      setTimeout(() => {
+                        const paymentSection = document.querySelector('[data-payment-section]')
+                        if (paymentSection) {
+                          paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                        }
+                      }, 300)
+                    } : undefined}
                     disabled={isPreviewMode || hasStarted}
                     uiMode={uiMode}
                     isPreviewMode={isPreviewMode}
@@ -254,20 +335,52 @@ export function SessionInviteRSVPDock({
                     isJoined={String(rsvpState) === "joined"}
                   />
                   {actualSessionId && !demoMode && (
-                    <Button
-                      onClick={onShareInviteLink}
-                      variant="ghost"
-                      size="icon"
-                      className={cn(
-                        "h-12 w-12 rounded-full",
-                        uiMode === "dark"
-                          ? "text-white hover:bg-white/10"
-                          : "text-black hover:bg-black/10"
+                    <>
+                      {/* Make Payment button - available anytime */}
+                      {onMakePaymentClick && (
+                        <Button
+                          onClick={() => {
+                            if (isPreviewMode) return
+                            onMakePaymentClick()
+                            // Scroll to payment section after a short delay
+                            setTimeout(() => {
+                              const paymentSection = document.querySelector('[data-payment-section]')
+                              if (paymentSection) {
+                                paymentSection.scrollIntoView({ behavior: "smooth", block: "start" })
+                              }
+                            }, 300)
+                          }}
+                          variant="ghost"
+                          size="icon"
+                          disabled={isPreviewMode}
+                          className={cn(
+                            "h-12 w-12 rounded-full",
+                            uiMode === "dark"
+                              ? "text-white hover:bg-white/10"
+                              : "text-black hover:bg-black/10",
+                            isPreviewMode && "opacity-50 cursor-not-allowed"
+                          )}
+                          aria-label="Make payment"
+                          title="Make payment"
+                        >
+                          <CreditCard className="h-5 w-5" />
+                        </Button>
                       )}
-                      aria-label="Share invite link"
-                    >
-                      <Share2 className="h-5 w-5" />
-                    </Button>
+                      <Button
+                        onClick={onShareInviteLink}
+                        variant="ghost"
+                        size="icon"
+                        className={cn(
+                          "h-12 w-12 rounded-full",
+                          uiMode === "dark"
+                            ? "text-white hover:bg-white/10"
+                            : "text-black hover:bg-black/10"
+                        )}
+                        aria-label="Share invite link"
+                      >
+                        <Share2 className="h-5 w-5" />
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>
