@@ -57,21 +57,34 @@ export function createAdminClient() {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
   
   if (!url || !serviceRoleKey) {
+    const missing = []
+    if (!url) missing.push("NEXT_PUBLIC_SUPABASE_URL")
+    if (!serviceRoleKey) missing.push("SUPABASE_SERVICE_ROLE_KEY")
     throw new Error(
-      `Missing required environment variables: ${!url ? "NEXT_PUBLIC_SUPABASE_URL" : ""} ${!serviceRoleKey ? "SUPABASE_SERVICE_ROLE_KEY" : ""}`
+      `Missing required environment variables: ${missing.join(", ")}. ` +
+      `On Vercel, ensure these are set in Project Settings > Environment Variables.`
     )
   }
   
   // Use createClient from @supabase/supabase-js directly for admin client
   // Passing service role key as second parameter automatically bypasses RLS
   // Keep configuration minimal - service role key handles authentication automatically
-  return createSupabaseClient(url, serviceRoleKey, {
+  // CRITICAL: On Vercel, ensure SUPABASE_SERVICE_ROLE_KEY is set in environment variables
+  const client = createSupabaseClient(url, serviceRoleKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
       detectSessionInUrl: false,
     },
-  });
+  })
+  
+  // Verify the client was created with service role (should bypass RLS)
+  // If this fails, it means the service role key is invalid
+  if (!client) {
+    throw new Error("Failed to create admin client. Service role key may be invalid.")
+  }
+  
+  return client
 }
 
 export async function createClientFromJwt(jwt: string) {

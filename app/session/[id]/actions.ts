@@ -1104,7 +1104,23 @@ export async function submitPaymentProof(
 
     // Use admin client for all validation and insert operations
     // This bypasses RLS which is appropriate since we're doing server-side validation
-    const adminClient = createAdminClient()
+    let adminClient: ReturnType<typeof createAdminClient>
+    try {
+      adminClient = createAdminClient()
+      logInfo("admin_client_created", withTrace({
+        hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+        hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        stage: "client_creation",
+      }, traceId))
+    } catch (error: any) {
+      logError("admin_client_creation_failed", withTrace({
+        error: error?.message,
+        hasUrl: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
+        hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        stage: "client_creation",
+      }, traceId))
+      return { ok: false, error: "Server configuration error. Please contact support." }
+    }
 
   // Verify session exists and is open
   const { data: session, error: sessionError } = await adminClient
@@ -1293,9 +1309,34 @@ export async function submitPaymentProof(
       participant_id: paidByParticipantId,
       covered_participant_ids: coveredParticipantIds,
       proof_image_url: publicUrl ? "present" : "missing",
+      insert_payload_keys: Object.keys(insertPayload),
       stage: "db_insert",
     }, traceId))
 
+    // Verify admin client can access participants table (proves RLS is bypassed)
+    // This is a quick sanity check - if this fails, admin client isn't working
+    const { data: testParticipant, error: testError } = await adminClient
+      .from("participants")
+      .select("id")
+      .eq("id", paidByParticipantId)
+      .limit(1)
+      .single()
+    
+    if (testError && testError.code !== "PGRST116") {
+      logError("admin_client_rls_test_failed", withTrace({
+        error: testError.message,
+        errorCode: testError.code,
+        stage: "admin_client_verification",
+      }, traceId))
+      // Continue anyway - might be a transient issue
+    } else {
+      logInfo("admin_client_rls_verified", withTrace({
+        canAccessParticipants: !testError,
+        stage: "admin_client_verification",
+      }, traceId))
+    }
+
+    // Insert payment proof using admin client (bypasses RLS)
     const { data: proofData, error: insertError } = await adminClient
       .from("payment_proofs")
       .insert(insertPayload)
@@ -1306,15 +1347,56 @@ export async function submitPaymentProof(
       logError("final_status_written", withTrace({
         error: insertError.message,
         errorCode: insertError.code,
+        errorDetails: insertError.details,
+        errorHint: insertError.hint,
+        insertPayload: {
+          session_id: insertPayload.session_id,
+          participant_id: insertPayload.participant_id,
+          has_covered_ids: !!insertPayload.covered_participant_ids,
+          has_image_url: !!insertPayload.proof_image_url,
+        },
         stage: "db_insert",
+        isVercel: !!process.env.VERCEL,
+        vercelEnv: process.env.VERCEL_ENV,
+        hasServiceRoleKey: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+        serviceRoleKeyLength: process.env.SUPABASE_SERVICE_ROLE_KEY?.length || 0,
       }, traceId))
+      
       // Try to clean up uploaded file using admin client
-      await adminClient.storage.from("payment-proofs").remove([filePath])
+      try {
+        await adminClient.storage.from("payment-proofs").remove([filePath])
+      } catch (cleanupError: any) {
+        logError("storage_cleanup_failed", withTrace({
+          error: cleanupError?.message,
+          filePath,
+        }, traceId))
+      }
       
       // Provide more helpful error messages
       if (insertError.code === "42501") {
-        return { ok: false, error: "Permission denied. Please ensure the migration has been applied." }
+        // This should NEVER happen with admin client - indicates service role key issue
+        logError("rls_error_with_admin_client", withTrace({
+          error: "RLS error occurred despite using admin client - service role key may be invalid or not set",
+          stage: "critical_error",
+        }, traceId))
+        return { 
+          ok: false, 
+          error: "Permission denied. This may be a configuration issue. Please contact support." 
+        }
       }
+      
+      // Check if it's a schema/column issue
+      if (insertError.message?.includes("column") || insertError.message?.includes("does not exist")) {
+        logError("schema_mismatch_error", withTrace({
+          error: insertError.message,
+          stage: "schema_validation",
+        }, traceId))
+        return { 
+          ok: false, 
+          error: "Database schema mismatch. Please ensure all migrations have been applied." 
+        }
+      }
+      
       return { ok: false, error: "Failed to save payment proof. Please try again." }
     }
 
