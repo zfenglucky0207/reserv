@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from "@/components/ui/button"
 import { cn } from "@/lib/utils"
 import { DraftSummary } from "@/app/actions/drafts"
-import { Trash2, Loader2 } from "lucide-react"
+import { Trash2, Loader2, AlertTriangle } from "lucide-react"
 
 interface DraftsDialogProps {
   open: boolean
@@ -70,18 +70,50 @@ export function DraftsDialog({
             "text-xl font-semibold",
             uiMode === "dark" ? "text-white" : "text-black"
           )}>
-            {isOverwriteMode ? "Overwrite draft" : "My drafts"}
+            {isOverwriteMode ? "Draft limit reached" : "My drafts"}
           </DialogTitle>
           <DialogDescription className={cn(
             uiMode === "dark" ? "text-white/60" : "text-black/60"
           )}>
             {isOverwriteMode
-              ? "You have 2 drafts already. Choose one to overwrite or delete one first."
+              ? "You have reached the maximum of 2 drafts. Remove one to proceed."
               : "Load or manage your saved drafts"}
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto mt-4 space-y-3 min-h-0">
+        {/* Warning banner when limit is reached */}
+        {isOverwriteMode && (
+          <div className={cn(
+            "mt-4 p-4 rounded-xl border flex items-start gap-3",
+            uiMode === "dark"
+              ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+              : "bg-yellow-50 border-yellow-300 text-yellow-800"
+          )}>
+            <AlertTriangle className={cn(
+              "w-5 h-5 flex-shrink-0 mt-0.5",
+              uiMode === "dark" ? "text-yellow-400" : "text-yellow-600"
+            )} />
+            <div className="flex-1">
+              <p className={cn(
+                "text-sm font-medium mb-1",
+                uiMode === "dark" ? "text-yellow-300" : "text-yellow-900"
+              )}>
+                Draft limit reached
+              </p>
+              <p className={cn(
+                "text-xs",
+                uiMode === "dark" ? "text-yellow-400/80" : "text-yellow-700"
+              )}>
+                You have reached the maximum of 2 drafts. Please remove one draft below to save a new one.
+              </p>
+            </div>
+          </div>
+        )}
+
+        <div className={cn(
+          "flex-1 overflow-y-auto space-y-3 min-h-0",
+          isOverwriteMode ? "mt-4" : "mt-4"
+        )}>
           {isLoading ? (
             <div className="flex items-center justify-center py-8">
               <Loader2 className={cn(
@@ -116,8 +148,10 @@ export function DraftsDialog({
                       }
                     }}
                     className={cn(
-                      "flex-1 min-w-0 text-left cursor-pointer",
-                      !isOverwriteMode && "hover:opacity-80 transition-opacity"
+                      "flex-1 min-w-0 text-left",
+                      !isOverwriteMode 
+                        ? "cursor-pointer hover:opacity-80 transition-opacity"
+                        : "cursor-default"
                     )}
                     disabled={isOverwriteMode}
                   >
@@ -152,14 +186,25 @@ export function DraftsDialog({
                   <div className="flex items-center gap-2 flex-shrink-0">
                     {isOverwriteMode ? (
                       <Button
-                        onClick={() => {
-                          onOverwrite(draft.id)
-                          onOpenChange(false)
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleDelete(draft.id)
                         }}
                         size="sm"
-                        className="bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full text-xs px-3 h-8"
+                        variant="outline"
+                        disabled={deletingId === draft.id}
+                        className={cn(
+                          "rounded-full px-3 h-10 w-10 flex items-center justify-center",
+                          uiMode === "dark"
+                            ? "bg-red-500/10 text-red-400 border-red-400/30 hover:bg-red-500/20 hover:border-red-400/50"
+                            : "bg-red-50 text-red-600 border-red-300 hover:bg-red-100 hover:border-red-400"
+                        )}
                       >
-                        Overwrite
+                        {deletingId === draft.id ? (
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-5 h-5" />
+                        )}
                       </Button>
                     ) : (
                       <Button

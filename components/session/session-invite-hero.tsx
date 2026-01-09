@@ -17,6 +17,8 @@ import {
   Eye,
   EyeOff,
   AlertTriangle,
+  CheckCircle2,
+  Circle,
 } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { DEFAULT_COVER_BG, HERO_TITLE_SHADOW, HERO_META_SHADOW, HERO_ICON_SHADOW, TITLE_FONTS } from "@/constants/session-invite-constants"
@@ -43,6 +45,8 @@ interface SessionInviteHeroProps {
   displayHostName: string
   fieldErrors: Record<"title" | "date" | "location" | "price" | "capacity" | "host", boolean>
   isHostNameSaving: boolean
+  isHostJoining: boolean
+  onHostJoiningToggle: (isJoining: boolean) => void
   hasStarted: boolean
   isFull: boolean
   demoMode: boolean
@@ -114,6 +118,8 @@ export function SessionInviteHero({
   displayHostName,
   fieldErrors,
   isHostNameSaving,
+  isHostJoining,
+  onHostJoiningToggle,
   hasStarted,
   isFull,
   demoMode,
@@ -607,29 +613,48 @@ export function SessionInviteHero({
                     <div className="min-w-0 flex-1">
                       <p className={cn("text-xs text-white/70 uppercase tracking-wide", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>Hosted by</p>
                       {isEditMode && !isPreviewMode ? (
-                        <input
-                          type="text"
-                          value={hostNameInput}
-                          onChange={(e) => {
-                            const value = e.target.value
-                            if (value.length <= 40) {
-                              onHostNameInputChange(value)
-                            }
-                          }}
-                          onFocus={() => {
-                            onHostNameFocus()
-                            // Field error clearing handled by parent
-                          }}
-                          onBlur={onHostNameSave}
-                          onKeyDown={onHostNameKeyDown}
-                          disabled={isHostNameSaving}
-                          maxLength={40}
-                          className={cn(
-                            "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 w-full placeholder:italic",
-                            fieldErrors.host ? "border-red-500/70 focus:border-red-500/70" : "focus:border-white/30"
-                          )}
-                          placeholder={getUserProfileName() ?? "Your name"}
-                        />
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
+                            value={hostNameInput}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value.length <= 40) {
+                                onHostNameInputChange(value)
+                              }
+                            }}
+                            onFocus={() => {
+                              onHostNameFocus()
+                              // Field error clearing handled by parent
+                            }}
+                            onBlur={onHostNameSave}
+                            onKeyDown={onHostNameKeyDown}
+                            disabled={isHostNameSaving}
+                            maxLength={40}
+                            className={cn(
+                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1 placeholder:italic",
+                              fieldErrors.host ? "border-red-500/70 focus:border-red-500/70" : "focus:border-white/30"
+                            )}
+                            placeholder={getUserProfileName() ?? "Your name"}
+                          />
+                          <button
+                            onClick={() => onHostJoiningToggle(!isHostJoining)}
+                            className={cn(
+                              "flex-shrink-0 p-1.5 rounded-full transition-all hover:scale-110 active:scale-95",
+                              isHostJoining
+                                ? "bg-lime-500/20 text-lime-400 hover:bg-lime-500/30"
+                                : "bg-white/10 text-white/60 hover:bg-white/20"
+                            )}
+                            title={isHostJoining ? "Host is joining (click to remove)" : "Host is not joining (click to add)"}
+                            aria-label={isHostJoining ? "Remove host from participants" : "Add host to participants"}
+                          >
+                            {isHostJoining ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : (
+                              <Circle className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
                       ) : (
                         <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                           {displayHostName || "Your name"}

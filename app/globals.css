@@ -172,6 +172,9 @@
   body {
     @apply bg-background text-foreground;
   }
+  button {
+    -webkit-tap-highlight-color: transparent;
+  }
 }
 
 /* Adding sporty background with gradient and subtle grain */

@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { ActionButton } from "@/components/ui/action-button"
 import { Separator } from "@/components/ui/separator"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -410,16 +411,16 @@ export function LoginDialog({ open, onOpenChange, onContinueAsGuest }: LoginDial
 
             <div className="space-y-3 mt-4">
               {/* OAuth Options - Main/Prominent */}
-              <Button
+              <ActionButton
                 onClick={handleGoogleClick}
                 className="w-full bg-white hover:bg-white/90 text-black font-medium h-12 text-base shadow-lg"
                 size="lg"
               >
                 <Chrome className="mr-2 h-5 w-5" />
                 Continue with Google
-              </Button>
+              </ActionButton>
 
-              <Button
+              <ActionButton
                 onClick={handleEmailClick}
                 variant="outline"
                 className="w-full border-white/30 bg-white/5 hover:bg-white/10 text-white font-medium h-12 text-base"
@@ -427,7 +428,7 @@ export function LoginDialog({ open, onOpenChange, onContinueAsGuest }: LoginDial
               >
                 <Mail className="mr-2 h-5 w-5" />
                 Continue with Email
-              </Button>
+              </ActionButton>
 
               {/* Separator */}
               <div className="relative py-2">

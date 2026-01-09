@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation"
 import { motion } from "framer-motion"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
+import { ActionButton } from "@/components/ui/action-button"
 import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Badge } from "@/components/ui/badge"
@@ -568,7 +569,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
               <span className={cn("text-xs", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
                 {analytics.attendance.accepted} going · {spotsLeft} spots left
               </span>
-                <Button
+                <ActionButton
                   onClick={handleOpenAddDialog}
                   variant="ghost"
                   size="icon"
@@ -580,7 +581,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
                   )}
                 >
                   <Plus className="h-4 w-4" />
-                </Button>
+                </ActionButton>
               </div>
             </div>
             
@@ -980,7 +981,7 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             </div>
           </div>
           <DialogFooter className="gap-3 mt-6">
-            <Button
+            <ActionButton
               onClick={() => {
                 setAddDialogOpen(false)
                 setNewParticipantName("")
@@ -997,14 +998,15 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
               )}
             >
               Cancel
-            </Button>
-            <Button
+            </ActionButton>
+            <ActionButton
               onClick={handleAddParticipant}
               disabled={isAdding || !newParticipantName.trim()}
+              showSpinner={!isAdding}
               className="flex-1 bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-12 shadow-lg"
             >
               {isAdding ? "Adding..." : "Add attendee"}
-            </Button>
+            </ActionButton>
           </DialogFooter>
         </DialogContent>
       </Dialog>

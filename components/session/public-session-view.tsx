@@ -14,6 +14,7 @@ import { useToast } from "@/hooks/use-toast"
 import { format, parseISO } from "date-fns"
 import { ArrowLeft, Check } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import { ActionButton } from "@/components/ui/action-button"
 import { cn } from "@/lib/utils"
 import { getOrCreateGuestKey, getGuestKey, generateNewGuestKey, clearGuestKey } from "@/lib/guest-key"
 import { 
@@ -179,6 +180,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   const { isAuthenticated, user, authUser } = useAuth()
   const [loginDialogOpen, setLoginDialogOpen] = useState(false)
   const [rsvpDialogOpen, setRsvpDialogOpen] = useState(false)
+  const [duplicateNameError, setDuplicateNameError] = useState<string | null>(null)
   const [uiMode, setUiMode] = useState<"dark" | "light">("dark")
   const [rsvpState, setRsvpState] = useState<"none" | "joined" | "waitlisted">("none")
   const [isLoadingRSVP, setIsLoadingRSVP] = useState(true)
@@ -804,27 +806,43 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         }, traceId))
         setLastJoinError(errorMessage)
         
+        // Check if it's a duplicate name error
+        const isDuplicateNameError = errorMessage.includes("already exists") || errorMessage.includes("duplicate")
+        
+        if (isDuplicateNameError) {
+          // Keep dialog open and show error in the input field
+          setDuplicateNameError(errorMessage)
+          // Don't close the dialog - let user try another name
+          return
+        }
+        
         if (result.code === "CAPACITY_EXCEEDED") {
           toast({
             title: "Session is full",
             description: "This session is full. Please contact the host or try again later.",
             variant: "destructive",
           })
+          setRsvpDialogOpen(false)
         } else if (errorMessage.includes("not found") || errorMessage.includes("Session not found")) {
             toast({
             title: "Session not found",
             description: "Please check the invite link and try again.",
               variant: "destructive",
             })
+            setRsvpDialogOpen(false)
           } else {
             toast({
               title: "Failed to join",
             description: errorMessage,
               variant: "destructive",
             })
+            setRsvpDialogOpen(false)
           }
         return
       }
+      
+      // Clear duplicate name error on success
+      setDuplicateNameError(null)
 
       // Success
       logInfo("join_success_client", { 
@@ -1228,7 +1246,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       {/* Back to Analytics Button - only show if from analytics */}
       {fromAnalytics && (
         <div className="fixed top-16 left-4 z-50">
-          <Button
+          <ActionButton
             onClick={handleBackToAnalytics}
             variant="outline"
             className={cn(
@@ -1240,7 +1258,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
           >
             <ArrowLeft className="w-4 h-4" />
             <span className="text-sm font-medium">Back to analytics</span>
-          </Button>
+          </ActionButton>
         </div>
       )}
 
@@ -1288,10 +1306,17 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       {/* RSVP Dialog - shown for both guests and authenticated users */}
       <GuestRSVPDialog
         open={rsvpDialogOpen}
-        onOpenChange={setRsvpDialogOpen}
+        onOpenChange={(open) => {
+          setRsvpDialogOpen(open)
+          if (!open) {
+            // Clear error when dialog closes
+            setDuplicateNameError(null)
+          }
+        }}
         onContinue={handleRSVPContinue}
         uiMode={uiMode}
         action="join"
+        error={duplicateNameError}
         initialName={
           // For authenticated users, use name from email/Gmail
           // For guests, use stored participant info
@@ -1355,7 +1380,12 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                       return (
                         <div
                           key={participant.id}
-                          onClick={() => {
+                          onClick={(e) => {
+                            // Only handle click if it's not on the checkbox itself
+                            if ((e.target as HTMLElement).closest('[role="checkbox"]')) {
+                              return // Let checkbox handle it
+                            }
+                            // Toggle selection when clicking the row
                             if (isSelected) {
                               setSelectedParticipantIds((prev) => prev.filter((id) => id !== participant.id))
                             } else {
@@ -1382,6 +1412,10 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                               } else {
                                 setSelectedParticipantIds((prev) => prev.filter((id) => id !== participant.id))
                               }
+                            }}
+                            onClick={(e) => {
+                              // Stop propagation to prevent div's onClick from firing
+                              e.stopPropagation()
                             }}
                             className={cn(
                               "h-6 w-6 border-2 transition-all",
@@ -1422,7 +1456,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                 )}
               </div>
               <div className="flex justify-end gap-3 pt-2">
-                <Button
+                <ActionButton
                   variant="outline"
                   onClick={() => {
                     setMakePaymentDialogOpen(false)
@@ -1436,10 +1470,11 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                   )}
                 >
                   Cancel
-                </Button>
-                <Button
+                </ActionButton>
+                <ActionButton
                   onClick={handlePaymentContinue}
                   disabled={selectedParticipantIds.length === 0 || isLoadingUnpaid}
+                  showSpinner={!isLoadingUnpaid}
                   className={cn(
                     "px-8 h-12 font-semibold rounded-full shadow-lg transition-all",
                     selectedParticipantIds.length === 0 || isLoadingUnpaid
@@ -1448,7 +1483,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
                   )}
                 >
                   {isLoadingUnpaid ? "Loading..." : `Continue (${selectedParticipantIds.length})`}
-                </Button>
+                </ActionButton>
               </div>
             </>
           )}

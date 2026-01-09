@@ -152,13 +152,16 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
     try {
       const result = await saveDraft(name, draftData, sessionId)
       if (result.ok) {
+        // Close dialogs immediately to prevent reopening
+        setShowDraftNameDialog(false)
+        setIsSavedToDraft(true)
+        setOpen(false)
+        
         toast({
           title: "Draft saved",
           description: "Your draft has been saved successfully.",
         })
-        setIsSavedToDraft(true)
-        setOpen(false)
-        setShowDraftNameDialog(false)
+        
         onDraftSaved?.()
       } else {
         toast({
@@ -303,7 +306,7 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
               ) : null}
 
               <DialogFooter className="gap-3 mt-6">
-                <Button
+                <ActionButton
                   onClick={handleNoThanks}
                   variant="outline"
                   disabled={isSaving}
@@ -315,23 +318,23 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
                   )}
                 >
                   No thanks
-                </Button>
+                </ActionButton>
                 {drafts.length < 2 ? (
-                  <Button
+                  <ActionButton
                     onClick={handleSaveDraft}
                     disabled={isSaving}
                     className="flex-1 bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-12 shadow-lg shadow-lime-500/20 disabled:opacity-50"
                   >
                     {isSaving ? "Loading..." : "Save draft"}
-                  </Button>
+                  </ActionButton>
                 ) : (
-                  <Button
+                  <ActionButton
                     onClick={() => selectedDraftId && handleReplaceConfirm()}
                     disabled={!selectedDraftId || isSaving}
                     className="flex-1 bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full h-12 shadow-lg shadow-lime-500/20 disabled:opacity-50"
                   >
                     {isSaving ? "Loading..." : "Replace selected draft"}
-                  </Button>
+                  </ActionButton>
                 )}
               </DialogFooter>
             </>
@@ -346,7 +349,7 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
                 </DialogDescription>
               </DialogHeader>
               <DialogFooter className="gap-3 mt-6">
-                <Button
+                <ActionButton
                   onClick={() => {
                     setShowReplaceConfirm(false)
                     setSelectedDraftId(null)
@@ -361,14 +364,14 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
                   )}
                 >
                   Cancel
-                </Button>
-                <Button
+                </ActionButton>
+                <ActionButton
                   onClick={handleReplaceConfirm}
                   disabled={isSaving}
                   className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20 disabled:opacity-50"
                 >
                   {isSaving ? "Replacing..." : "Confirm replace"}
-                </Button>
+                </ActionButton>
               </DialogFooter>
             </>
           )}

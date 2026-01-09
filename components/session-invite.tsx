@@ -39,7 +39,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { useToast } from "@/hooks/use-toast"
-import { logInfo, logError, newTraceId, withTrace } from "@/lib/logger"
+import { logInfo, logError, logWarn, newTraceId, withTrace } from "@/lib/logger"
 import { EditorBottomBar } from "./editor-bottom-bar"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import { MobileCalendar } from "@/components/ui/mobile-calendar"
@@ -59,6 +59,8 @@ import { SessionInviteContent } from "@/components/session/session-invite-conten
 import { SessionInviteModals } from "@/components/session/session-invite-modals"
 import { SessionInviteRSVPDock } from "@/components/session/session-invite-rsvp-dock"
 import { PullOutButton } from "@/components/session/pull-out-button"
+import { toggleHostParticipation, getHostParticipationStatus } from "@/app/session/[id]/actions"
+import { CheckCircle2, Circle } from "lucide-react"
 
 interface DemoParticipant {
   name: string
@@ -470,6 +472,7 @@ export function SessionInvite({
   const [hostNameInput, setHostNameInput] = useState(initialHostName || "")
   const [isHostNameEditing, setIsHostNameEditing] = useState(false)
   const [isHostNameSaving, setIsHostNameSaving] = useState(false)
+  const [isHostJoining, setIsHostJoining] = useState(true) // Default to true (host is joining)
   // Initialize sport from prop or default to "Badminton"
   // Normalize to capitalized form for UI consistency
   const getSportDisplayName = (sport: string | null | undefined): string => {
@@ -1430,15 +1433,21 @@ export function SessionInvite({
       
       // Use participant IDs from props - need at least one covered participant
       if (!payingForParticipantIds || payingForParticipantIds.length === 0) {
-        logError("upload_failed", withTrace({
-          error: "No participant IDs provided",
+        logWarn("upload_no_participants_selected", withTrace({
           stage: "validation",
+          action: "opening_payment_dialog",
         }, traceId))
-        toast({
-          title: "Error",
-          description: "Please select who you're paying for first.",
-          variant: "destructive",
-        })
+        // Instead of showing error, open the payment dialog to let user select participants
+        if (onMakePaymentClick) {
+          onMakePaymentClick()
+        } else {
+          // Fallback to error if handler not available
+          toast({
+            title: "Error",
+            description: "Please select who you're paying for first.",
+            variant: "destructive",
+          })
+        }
         setIsSubmittingProof(false)
         return
       }
@@ -1569,6 +1578,20 @@ export function SessionInvite({
       setHostNameInput(displayHostName)
     }
   }, [displayHostName, isHostNameEditing])
+
+  // Check host participation status on mount
+  useEffect(() => {
+    const checkHostParticipation = async () => {
+      if (!actualSessionId || !isEditMode) return
+      
+      const result = await getHostParticipationStatus(actualSessionId)
+      if (result.ok) {
+        setIsHostJoining(result.isParticipating)
+      }
+    }
+    
+    checkHostParticipation()
+  }, [actualSessionId, isEditMode])
 
   // Clear errors when fields become valid
   useEffect(() => {
@@ -2190,24 +2213,32 @@ export function SessionInvite({
       const result = await saveDraft(name, payload, actualSessionId || null)
 
       if (result.ok) {
+        // Close dialog immediately to prevent reopening during lag
+        setDraftNameOpen(false)
+        setDraftName("")
+        
         toast({
           title: "Draft saved",
           description: "Your draft has been saved successfully.",
           variant: "success",
         })
-        setDraftNameOpen(false)
-        setDraftName("")
-        // Refresh drafts list if dialog is open
+        
+        // Refresh drafts list if dialog is open (after a short delay to avoid race conditions)
         if (draftsOpen) {
-          await refreshDrafts()
+          setTimeout(async () => {
+            await refreshDrafts()
+          }, 100)
         }
       } else {
         if (result.code === "LIMIT_REACHED") {
           // Open drafts dialog in overwrite mode
           setIsOverwriteMode(true)
           setDraftNameOpen(false)
-          await refreshDrafts()
-          setDraftsOpen(true)
+          // Small delay to prevent modal flicker
+          setTimeout(async () => {
+            await refreshDrafts()
+            setDraftsOpen(true)
+          }, 100)
         } else {
           toast({
             title: "Failed to save draft",
@@ -2287,6 +2318,13 @@ export function SessionInvite({
           variant: "success",
         })
         await refreshDrafts()
+        
+        // If in overwrite mode and we deleted a draft, close the dialog and exit overwrite mode
+        // This allows the user to save a new draft now that there's space
+        if (isOverwriteMode) {
+          setIsOverwriteMode(false)
+          setDraftsOpen(false)
+        }
       } else {
         toast({
           title: "Failed to delete draft",
@@ -3003,8 +3041,9 @@ export function SessionInvite({
                     <div className="min-w-0 flex-1">
                         <p className={cn("text-xs text-white/70 uppercase tracking-wide", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>Hosted by</p>
                       {isEditMode && !isPreviewMode ? (
-                        <input
-                          type="text"
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="text"
                             value={hostNameInput}
                             onChange={(e) => {
                               const value = e.target.value
@@ -3021,11 +3060,47 @@ export function SessionInvite({
                             disabled={isHostNameSaving}
                             maxLength={40}
                             className={cn(
-                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 w-full placeholder:italic",
+                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1 placeholder:italic",
                               fieldErrors.host ? "border-red-500/70 focus:border-red-500/70" : "focus:border-white/30"
                             )}
                             placeholder={getUserProfileName() ?? "Your name"}
-                        />
+                          />
+                          <button
+                            onClick={async () => {
+                              if (!actualSessionId || !hostNameInput.trim()) return
+                              const newIsJoining = !isHostJoining
+                              setIsHostJoining(newIsJoining)
+                              const result = await toggleHostParticipation(actualSessionId, hostNameInput.trim(), newIsJoining)
+                              if (!result.ok) {
+                                setIsHostJoining(!newIsJoining) // Revert on error
+                                toast({
+                                  title: "Failed to update participation",
+                                  description: result.error,
+                                  variant: "destructive",
+                                })
+                              } else {
+                                toast({
+                                  title: newIsJoining ? "Host added to participants" : "Host removed from participants",
+                                  variant: "success",
+                                })
+                              }
+                            }}
+                            className={cn(
+                              "flex-shrink-0 p-1.5 rounded-full transition-all hover:scale-110 active:scale-95",
+                              isHostJoining
+                                ? "bg-lime-500/20 text-lime-400 hover:bg-lime-500/30"
+                                : "bg-white/10 text-white/60 hover:bg-white/20"
+                            )}
+                            title={isHostJoining ? "Host is joining (click to remove)" : "Host is not joining (click to add)"}
+                            aria-label={isHostJoining ? "Remove host from participants" : "Add host to participants"}
+                          >
+                            {isHostJoining ? (
+                              <CheckCircle2 className="w-4 h-4" />
+                            ) : (
+                              <Circle className="w-4 h-4" />
+                            )}
+                          </button>
+                        </div>
                       ) : (
                           <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {displayHostName || "Your name"}

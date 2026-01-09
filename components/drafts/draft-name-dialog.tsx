@@ -3,6 +3,7 @@
 import { useState } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
+import { ActionButton } from "@/components/ui/action-button"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { cn } from "@/lib/utils"
@@ -10,7 +11,7 @@ import { cn } from "@/lib/utils"
 interface DraftNameDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  onSave: (name: string) => void
+  onSave: (name: string) => Promise<void> | void
   uiMode: "dark" | "light"
 }
 
@@ -19,14 +20,19 @@ export function DraftNameDialog({ open, onOpenChange, onSave, uiMode }: DraftNam
   const [isSaving, setIsSaving] = useState(false)
 
   const handleSave = async () => {
-    if (!name.trim()) {
+    if (!name.trim() || isSaving) {
       return
     }
 
     setIsSaving(true)
-    onSave(name.trim())
-    setName("")
-    setIsSaving(false)
+    try {
+      await onSave(name.trim())
+      // Parent will close the dialog and reset state
+      // We keep isSaving true to show feedback until parent closes
+    } catch (error) {
+      // Error handling is done in parent
+      setIsSaving(false) // Reset on error so user can try again
+    }
   }
 
   const handleOpenChange = (isOpen: boolean) => {
@@ -97,7 +103,7 @@ export function DraftNameDialog({ open, onOpenChange, onSave, uiMode }: DraftNam
           "mt-6 pt-4 flex gap-3",
           uiMode === "dark" ? "border-t border-white/10" : "border-t border-black/10"
         )}>
-          <Button
+          <ActionButton
             variant="outline"
             onClick={() => handleOpenChange(false)}
             disabled={isSaving}
@@ -109,14 +115,14 @@ export function DraftNameDialog({ open, onOpenChange, onSave, uiMode }: DraftNam
             )}
           >
             Cancel
-          </Button>
-          <Button
+          </ActionButton>
+          <ActionButton
             onClick={handleSave}
             disabled={!name.trim() || isSaving}
             className="flex-1 bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium rounded-full disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            Save draft
-          </Button>
+            {isSaving ? "Saving..." : "Save draft"}
+          </ActionButton>
         </div>
       </DialogContent>
     </Dialog>

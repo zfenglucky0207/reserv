@@ -1,6 +1,6 @@
 "use server"
 
-import { createClient, createAdminClient, createAnonymousClient } from "@/lib/supabase/server/server"
+import { createClient, createAdminClient, createAnonymousClient, getUserId } from "@/lib/supabase/server/server"
 import { revalidatePath } from "next/cache"
 import { logInfo, logError, logWarn, withTrace, newTraceId } from "@/lib/logger"
 
@@ -1267,14 +1267,15 @@ export async function submitPaymentProof(
       validated: true,
     }, traceId))
 
-    // Insert payment_proofs record using admin client
-    // We've already validated all participants belong to the session on the server side
-    // Using admin client bypasses RLS and ensures the insert succeeds
+    // Insert payment_proofs record using anonymous client
+    // RLS policy "participants_can_upload_payment_proof" allows this insert
+    // since we've validated that all participants exist and belong to the session
     // Format covered_participant_ids as JSONB array
     // Format: [{"participant_id": "uuid1"}, {"participant_id": "uuid2"}]
     const coveredParticipantsJson = coveredParticipantIds.map(id => ({ participant_id: id }))
 
-    const { data: proofData, error: insertError } = await adminClient
+    const anonClient = await createAnonymousClient()
+    const { data: proofData, error: insertError } = await anonClient
       .from("payment_proofs")
       .insert({
         session_id: sessionId,
@@ -1343,5 +1344,133 @@ export async function submitPaymentProof(
     }, traceId))
     return { ok: false, error: "An unexpected error occurred. Please try again." }
   }
+}
+
+/**
+ * Toggle host participation in their own session
+ * Adds host as a participant if not already, removes if already participating
+ */
+export async function toggleHostParticipation(
+  sessionId: string,
+  hostName: string,
+  isJoining: boolean
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user is the host of this session
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id, host_id")
+    .eq("id", sessionId)
+    .eq("host_id", userId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found or unauthorized" }
+  }
+
+  const adminSupabase = createAdminClient()
+
+  // Get user email
+  const { data: { user } } = await supabase.auth.getUser()
+  const userEmail = user?.email || null
+
+  if (isJoining) {
+    // Add host as participant
+    // Check if host is already a participant
+    const { data: existingParticipant } = await adminSupabase
+      .from("participants")
+      .select("id, status")
+      .eq("session_id", sessionId)
+      .eq("contact_email", userEmail || "")
+      .maybeSingle()
+
+    if (existingParticipant) {
+      // Already a participant, update status to confirmed and name if needed
+      const { error: updateError } = await adminSupabase
+        .from("participants")
+        .update({ 
+          status: "confirmed",
+          display_name: hostName,
+        })
+        .eq("id", existingParticipant.id)
+
+      if (updateError) {
+        return { ok: false, error: updateError.message }
+      }
+    } else {
+      // Insert new participant for host
+      const { error: insertError } = await adminSupabase
+        .from("participants")
+        .insert({
+          session_id: sessionId,
+          display_name: hostName,
+          contact_email: userEmail,
+          status: "confirmed",
+          profile_id: userId, // Use user ID as profile_id for hosts
+        })
+
+      if (insertError) {
+        return { ok: false, error: insertError.message }
+      }
+    }
+  } else {
+    // Remove host as participant
+    const { error: deleteError } = await adminSupabase
+      .from("participants")
+      .delete()
+      .eq("session_id", sessionId)
+      .eq("contact_email", userEmail || "")
+
+    if (deleteError) {
+      return { ok: false, error: deleteError.message }
+    }
+  }
+
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+  revalidatePath(`/s/${sessionId}`)
+
+  return { ok: true }
+}
+
+/**
+ * Check if host is participating in their session
+ */
+export async function getHostParticipationStatus(
+  sessionId: string
+): Promise<{ ok: true; isParticipating: boolean } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get user email
+  const { data: { user } } = await supabase.auth.getUser()
+  const userEmail = user?.email
+
+  if (!userEmail) {
+    return { ok: false, error: "User email not found" }
+  }
+
+  // Check if host is a participant
+  const { data: participant, error } = await supabase
+    .from("participants")
+    .select("id")
+    .eq("session_id", sessionId)
+    .eq("contact_email", userEmail)
+    .maybeSingle()
+
+  if (error) {
+    return { ok: false, error: error.message }
+  }
+
+  return { ok: true, isParticipating: !!participant }
 }
 
