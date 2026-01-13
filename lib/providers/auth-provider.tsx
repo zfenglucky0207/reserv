@@ -101,6 +101,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     fetchUser();
   }, [authUser]);
 
+  // Auto-link pending session invites when user signs up/logs in
+  const linkPendingInvites = async (userEmail: string, userId: string) => {
+    try {
+      const { linkPendingInvites: linkInvites } = await import("@/app/actions/session-hosts");
+      const result = await linkInvites(userEmail, userId);
+      
+      if (result.ok && result.linkedCount > 0) {
+        console.log(`[AUTH] Linked ${result.linkedCount} pending session invite(s)`);
+      }
+    } catch (error) {
+      console.error("[AUTH] Error in linkPendingInvites:", error);
+    }
+  };
+
   React.useEffect(() => {
     const supabase = createClient();
 
@@ -108,21 +122,34 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       async (event, session) => {
         setAuthUser(session?.user || undefined);
         
-        // Handle redirect after sign-in (client-side fallback for OTP verification)
-        // Note: OAuth redirects are handled by /auth/callback route
-        // This is mainly for OTP verification which happens in-page
-        if (event === "SIGNED_IN" && typeof window !== "undefined") {
-          try {
-            const { consumePostAuthRedirect } = await import("@/lib/post-auth-redirect");
-            const returnTo = consumePostAuthRedirect();
-            if (returnTo && returnTo !== "/" && returnTo !== "/home" && !returnTo.startsWith("/auth")) {
-              // Use setTimeout to ensure state updates complete first
-              setTimeout(() => {
-                window.location.href = returnTo;
-              }, 100);
+        // Auto-link pending invites when user signs in
+        if (event === "SIGNED_IN" && session?.user) {
+          const userEmail = session.user.email;
+          const userId = session.user.id;
+          
+          if (userEmail && userId) {
+            // Link pending invites in the background (don't block UI)
+            linkPendingInvites(userEmail, userId).catch((error) => {
+              console.error("[AUTH] Failed to link pending invites:", error);
+            });
+          }
+
+          // Handle redirect after sign-in (client-side fallback for OTP verification)
+          // Note: OAuth redirects are handled by /auth/callback route
+          // This is mainly for OTP verification which happens in-page
+          if (typeof window !== "undefined") {
+            try {
+              const { consumePostAuthRedirect } = await import("@/lib/post-auth-redirect");
+              const returnTo = consumePostAuthRedirect();
+              if (returnTo && returnTo !== "/" && returnTo !== "/home" && !returnTo.startsWith("/auth")) {
+                // Use setTimeout to ensure state updates complete first
+                setTimeout(() => {
+                  window.location.href = returnTo;
+                }, 100);
+              }
+            } catch (error) {
+              console.error("[AUTH] Redirect failed in auth provider", error);
             }
-          } catch (error) {
-            console.error("[AUTH] Redirect failed in auth provider", error);
           }
         }
       }
@@ -132,6 +159,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       subscription?.subscription.unsubscribe();
     };
   }, []);
+
+  // Also check for pending invites on initial load if user is already signed in
+  React.useEffect(() => {
+    if (authUser?.email && authUser?.id) {
+      linkPendingInvites(authUser.email, authUser.id).catch((error) => {
+        console.error("[AUTH] Failed to link pending invites on init:", error);
+      });
+    }
+  }, [authUser?.email, authUser?.id]);
 
   const logIn = async (email: string, password: string) => {
     setError(null);

@@ -3,7 +3,7 @@
 import { motion, AnimatePresence } from "framer-motion"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
-import { Share2, Sparkles, CreditCard } from "lucide-react"
+import { Share2, Sparkles, CreditCard, Copy, Instagram } from "lucide-react"
 import { SwipeToJoinSlider } from "./swipe-to-join-slider"
 
 interface SessionInviteRSVPDockProps {
@@ -24,6 +24,8 @@ interface SessionInviteRSVPDockProps {
   onJoinClick?: () => void
   onMakePaymentClick?: () => void
   onShareInviteLink: () => void
+  onShareToInstagramStory?: () => void
+  isGeneratingStory?: boolean
 }
 
 export function SessionInviteRSVPDock({
@@ -44,6 +46,8 @@ export function SessionInviteRSVPDock({
   onJoinClick,
   onMakePaymentClick,
   onShareInviteLink,
+  onShareToInstagramStory,
+  isGeneratingStory = false,
 }: SessionInviteRSVPDockProps) {
   return (
     <AnimatePresence>
@@ -384,6 +388,54 @@ export function SessionInviteRSVPDock({
                   )}
                 </div>
               </div>
+            )}
+
+            {/* Bottom Share Bar - Only show for published sessions */}
+            {actualSessionId && !demoMode && publicCode && (!isEditMode || isPreviewMode) && (
+              <motion.div
+                initial={{ y: 8, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ duration: 0.2, delay: 0.1 }}
+                className={cn(
+                  "mt-3 rounded-xl p-3 flex gap-2",
+                  uiMode === "dark"
+                    ? "bg-white/5 border border-white/10"
+                    : "bg-black/5 border border-black/10"
+                )}
+              >
+                <Button
+                  onClick={onShareInviteLink}
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "flex-1 h-9 rounded-full text-xs font-medium",
+                    uiMode === "dark"
+                      ? "text-white hover:bg-white/10"
+                      : "text-black hover:bg-black/10"
+                  )}
+                >
+                  <Copy className="w-3.5 h-3.5 mr-1.5" />
+                  Copy Link
+                </Button>
+                {onShareToInstagramStory && (
+                  <Button
+                    onClick={onShareToInstagramStory}
+                    disabled={isGeneratingStory}
+                    variant="ghost"
+                    size="sm"
+                    className={cn(
+                      "flex-1 h-9 rounded-full text-xs font-medium",
+                      uiMode === "dark"
+                        ? "text-white hover:bg-white/10"
+                        : "text-black hover:bg-black/10",
+                      isGeneratingStory && "opacity-50 cursor-not-allowed"
+                    )}
+                  >
+                    <Instagram className="w-3.5 h-3.5 mr-1.5" />
+                    {isGeneratingStory ? "Generating..." : "Instagram Story"}
+                  </Button>
+                )}
+              </motion.div>
             )}
           </div>
         </motion.div>

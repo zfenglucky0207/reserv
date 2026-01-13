@@ -21,6 +21,8 @@ interface PublishShareSheetProps {
   title?: string // Optional custom title
   description?: string // Optional custom description
   hostName?: string | null // Host name for share text
+  onShareToInstagramStory?: () => void // Handler for Instagram Story share
+  isGeneratingStory?: boolean // Loading state for story generation
 }
 
 export function PublishShareSheet({
@@ -34,6 +36,8 @@ export function PublishShareSheet({
   title = "Published 🎉",
   description = "Your invite link is ready. Share it with your group.",
   hostName,
+  onShareToInstagramStory,
+  isGeneratingStory = false,
 }: PublishShareSheetProps) {
   const router = useRouter()
   const { toast } = useToast()
@@ -228,18 +232,28 @@ export function PublishShareSheet({
                 <span className="text-xs font-medium">WhatsApp</span>
               </motion.button>
 
-              {/* Instagram */}
+              {/* Instagram Story */}
               <motion.button
                 whileHover={{ scale: 1.05 }}
                 whileTap={{ scale: 0.95 }}
-                onClick={() => handleShare("instagram")}
+                onClick={() => {
+                  if (onShareToInstagramStory) {
+                    onShareToInstagramStory()
+                  } else {
+                    handleShare("instagram")
+                  }
+                }}
+                disabled={isGeneratingStory}
                 className={cn(
                   "flex flex-col items-center justify-center gap-2 p-4 rounded-xl border transition-colors",
-                  glassCard
+                  glassCard,
+                  isGeneratingStory && "opacity-50 cursor-not-allowed"
                 )}
               >
                 <Instagram className="w-6 h-6" />
-                <span className="text-xs font-medium">Instagram</span>
+                <span className="text-xs font-medium">
+                  {isGeneratingStory ? "Generating..." : "Instagram Story"}
+                </span>
               </motion.button>
 
               {/* Telegram */}

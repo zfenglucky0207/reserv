@@ -51,7 +51,7 @@ import type { DraftData, DraftSummary } from "@/app/actions/drafts"
 import { listDrafts, saveDraft, getDraft, deleteDraft, overwriteDraft } from "@/app/actions/drafts"
 import { PublishShareSheet } from "@/components/publish-share-sheet"
 import { HostSessionAnalytics } from "@/components/host/host-session-analytics"
-import { Share2 } from "lucide-react"
+import { Share2, Instagram, Copy } from "lucide-react"
 import { HERO_TITLE_SHADOW, HERO_META_SHADOW, HERO_ICON_SHADOW, DEFAULT_COVER_BG, SPORT_COVER_MAP, SPORT_THEME_MAP, TITLE_FONTS } from "@/constants/session-invite-constants"
 import { formatCourtDisplay, getSportDisplayName, getCoverOptions, parseEventDate, formatEventDate, isValidGoogleMapsUrl, getValidGoogleMapsUrl, getMapEmbedSrc, normalizeMapUrl, isTitleValid, isDateValid, isLocationValid, isPriceValid, isCapacityValid, isHostValid } from "@/utils/session-invite-helpers"
 import { SwipeToJoinSlider } from "@/components/session/swipe-to-join-slider"
@@ -64,6 +64,8 @@ import { toggleHostParticipation, getHostParticipationStatus } from "@/app/sessi
 import { CheckCircle2, Circle } from "lucide-react"
 import { LiveInviteGuardModal } from "@/components/host/live-invite-guard-modal"
 import { getHostLiveSessions } from "@/app/host/sessions/[id]/actions"
+import { captureInviteSnapshot, generateStoryImage, downloadBlob, copyToClipboard, tryWebShare } from "@/utils/instagram-story"
+import { InstagramStoryShareModal } from "@/components/session/instagram-story-share-modal"
 
 interface DemoParticipant {
   name: string
@@ -325,6 +327,80 @@ export function SessionInvite({
     setPublishShareSheetOpen(true) // Opens the share sheet
   }
 
+  // Handle Instagram Story share
+  const handleShareToInstagramStory = async () => {
+    if (!publicCode || !hostSlug) {
+      toast({
+        title: "Session not published",
+        description: "Publish the session to share to Instagram Story.",
+        variant: "default",
+      })
+      return
+    }
+
+    const { getInviteShareUrl } = await import("@/lib/invite-url")
+    const inviteUrl = getInviteShareUrl({ hostSlug, publicCode })
+    if (!inviteUrl) {
+      toast({
+        title: "Can't generate share link",
+        description: "Missing invite link information.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsGeneratingStory(true)
+    try {
+      // Find the invite capture container
+      const captureNode = document.getElementById("invite-capture")
+      if (!captureNode) {
+        throw new Error("Invite content not found")
+      }
+
+      // Capture snapshot
+      const snapshotDataUrl = await captureInviteSnapshot(captureNode, {
+        width: 540,
+        height: 960,
+        pixelRatio: 2,
+      })
+
+      // Generate story image
+      const { blob, dataUrl } = await generateStoryImage({
+        snapshotDataUrl,
+        title: "Join my session",
+        sessionTitle: eventTitle || "Session Invite",
+        sessionWhen: eventDate || "Date TBD",
+        inviteLink: inviteUrl,
+      })
+
+      // Try Web Share API first (mobile)
+      const shared = await tryWebShare({
+        blob,
+        filename: "session-invite-story.png",
+        title: "Join my session",
+        text: inviteUrl,
+      })
+
+      if (!shared) {
+        // Fallback: download + copy link
+        downloadBlob(blob, "session-invite-story.png")
+        await copyToClipboard(inviteUrl)
+      }
+
+      // Show instructions modal
+      setInstagramStoryModalOpen(true)
+    } catch (error: any) {
+      console.error("[handleShareToInstagramStory] Error:", error)
+      toast({
+        title: "Failed to generate story",
+        description: error?.message || "Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsGeneratingStory(false)
+    }
+  }
+
   // Update actualSessionId when sessionId prop changes
   useEffect(() => {
     if (sessionId) {
@@ -347,6 +423,10 @@ export function SessionInvite({
   const [publishedCode, setPublishedCode] = useState("")
   const [publishedHostName, setPublishedHostName] = useState<string | null>(null)
   const [isShareFromButton, setIsShareFromButton] = useState(false) // Track if opened from share button vs publish
+  
+  // Instagram Story share state
+  const [instagramStoryModalOpen, setInstagramStoryModalOpen] = useState(false)
+  const [isGeneratingStory, setIsGeneratingStory] = useState(false)
 
   // Placeholder constants for validation
   const PLACEHOLDERS = {
@@ -2702,7 +2782,7 @@ export function SessionInvite({
 
       {/* Main Content - Hero Section */}
       <LayoutGroup>
-      <div className="relative">
+      <div id="invite-capture" className="relative">
         {/* Hero Card with Full-Height Immersive Background */}
         <motion.div
           initial={{ opacity: 0 }}
@@ -4336,6 +4416,14 @@ export function SessionInvite({
         isLoading={loadingDrafts}
       />
 
+      {/* Instagram Story Share Modal */}
+      <InstagramStoryShareModal
+        open={instagramStoryModalOpen}
+        onOpenChange={setInstagramStoryModalOpen}
+        uiMode={uiMode}
+        inviteLink={publishedUrl || (hostSlug && publicCode ? `https://${typeof window !== "undefined" ? window.location.host : ""}/${hostSlug}/${publicCode}` : "")}
+      />
+
       {/* Publish Share Sheet */}
       <PublishShareSheet
         open={publishShareSheetOpen}
@@ -4369,6 +4457,8 @@ export function SessionInvite({
         hostName={publishedHostName}
         title={isShareFromButton ? "Share invite link" : undefined}
         description={isShareFromButton ? "Share your invite link with participants." : undefined}
+        onShareToInstagramStory={handleShareToInstagramStory}
+        isGeneratingStory={isGeneratingStory}
       />
 
       {/* Live Invite Guard Modal - Shows when limit is reached */}
@@ -4613,6 +4703,52 @@ export function SessionInvite({
                   )}
                 </div>
               </div>
+            )}
+
+            {/* Bottom Share Bar - Only show for published sessions */}
+            {actualSessionId && !demoMode && publicCode && (
+              <motion.div
+                initial={{ y: 8, opacity: 0 }}
+                animate={{ y: 0, opacity: 1 }}
+                transition={{ duration: 0.2, delay: 0.1 }}
+                className={cn(
+                  "mt-3 rounded-xl p-3 flex gap-2",
+                  uiMode === "dark"
+                    ? "bg-white/5 border border-white/10"
+                    : "bg-black/5 border border-black/10"
+                )}
+              >
+                <Button
+                  onClick={handleShareInviteLink}
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "flex-1 h-9 rounded-full text-xs font-medium",
+                    uiMode === "dark"
+                      ? "text-white hover:bg-white/10"
+                      : "text-black hover:bg-black/10"
+                  )}
+                >
+                  <Share2 className="w-3.5 h-3.5 mr-1.5" />
+                  Copy Link
+                </Button>
+                <Button
+                  onClick={handleShareToInstagramStory}
+                  disabled={isGeneratingStory}
+                  variant="ghost"
+                  size="sm"
+                  className={cn(
+                    "flex-1 h-9 rounded-full text-xs font-medium",
+                    uiMode === "dark"
+                      ? "text-white hover:bg-white/10"
+                      : "text-black hover:bg-black/10",
+                    isGeneratingStory && "opacity-50 cursor-not-allowed"
+                  )}
+                >
+                  <Instagram className="w-3.5 h-3.5 mr-1.5" />
+                  {isGeneratingStory ? "Generating..." : "Instagram Story"}
+                </Button>
+              </motion.div>
             )}
           </div>
         </motion.div>

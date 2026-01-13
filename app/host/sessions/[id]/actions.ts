@@ -7,6 +7,219 @@ import { generateShortCode } from "@/lib/utils/short-code"
 import { toSlug } from "@/lib/utils/slug"
 import { logInfo, logWarn, logError, withTrace, newTraceId } from "@/lib/logger"
 
+/**
+ * Get session access role for current user
+ * Returns the user's role ('owner' | 'host') if they have access, or null if no access
+ */
+export async function getSessionAccess(sessionId: string): Promise<
+  | { ok: true; role: "owner" | "host" }
+  | { ok: false; error?: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  const { data: sessionHost, error } = await supabase
+    .from("session_hosts")
+    .select("role")
+    .eq("session_id", sessionId)
+    .eq("user_id", userId)
+    .single()
+
+  if (error || !sessionHost) {
+    return { ok: false, error: "No access to this session" }
+  }
+
+  return { ok: true, role: sessionHost.role as "owner" | "host" }
+}
+
+/**
+ * Invite a host to manage a session
+ * Only owners can invite hosts
+ */
+export async function inviteHost(
+  sessionId: string,
+  email: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Normalize email to lowercase
+  const normalizedEmail = email.toLowerCase().trim()
+
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    return { ok: false, error: "Invalid email address" }
+  }
+
+  // Verify user is owner
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok || access.role !== "owner") {
+    return { ok: false, error: "Only the session owner can invite hosts" }
+  }
+
+  // Get owner email to prevent self-invite
+  const { data: { user } } = await supabase.auth.getUser()
+  const ownerEmail = user?.email?.toLowerCase()
+  if (normalizedEmail === ownerEmail) {
+    return { ok: false, error: "You cannot invite yourself" }
+  }
+
+  // Check if email is already invited
+  const { data: existingInvite, error: checkError } = await supabase
+    .from("session_hosts")
+    .select("id, email, role")
+    .eq("session_id", sessionId)
+    .eq("email", normalizedEmail)
+    .single()
+
+  if (checkError && checkError.code !== "PGRST116") {
+    // PGRST116 is "not found" which is expected for new invites
+    return { ok: false, error: `Failed to check existing invites: ${checkError.message}` }
+  }
+
+  if (existingInvite) {
+    return { ok: false, error: "This email has already been invited" }
+  }
+
+  // Insert host invite
+  const { error: insertError } = await supabase
+    .from("session_hosts")
+    .insert({
+      session_id: sessionId,
+      email: normalizedEmail,
+      role: "host",
+      invited_at: new Date().toISOString(),
+      invited_by: userId,
+      user_id: null, // Will be filled when user signs up/logs in
+      accepted_at: null,
+    })
+
+  if (insertError) {
+    return { ok: false, error: `Failed to send invite: ${insertError.message}` }
+  }
+
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+
+  return { ok: true }
+}
+
+/**
+ * Remove a host from a session
+ * Only owners can remove hosts, and cannot remove themselves
+ */
+export async function removeHost(
+  sessionId: string,
+  hostEmail: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user is owner
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok || access.role !== "owner") {
+    return { ok: false, error: "Only the session owner can remove hosts" }
+  }
+
+  const normalizedEmail = hostEmail.toLowerCase().trim()
+
+  // Get the host row to check role
+  const { data: hostRow, error: fetchError } = await supabase
+    .from("session_hosts")
+    .select("id, role, email")
+    .eq("session_id", sessionId)
+    .eq("email", normalizedEmail)
+    .single()
+
+  if (fetchError || !hostRow) {
+    return { ok: false, error: "Host not found" }
+  }
+
+  // Cannot remove owner
+  if (hostRow.role === "owner") {
+    return { ok: false, error: "Cannot remove the session owner" }
+  }
+
+  // Delete the host row
+  const { error: deleteError } = await supabase
+    .from("session_hosts")
+    .delete()
+    .eq("id", hostRow.id)
+
+  if (deleteError) {
+    return { ok: false, error: `Failed to remove host: ${deleteError.message}` }
+  }
+
+  revalidatePath(`/host/sessions/${sessionId}/edit`)
+
+  return { ok: true }
+}
+
+/**
+ * Get list of hosts for a session
+ */
+export async function getSessionHosts(
+  sessionId: string
+): Promise<
+  | {
+      ok: true
+      hosts: Array<{
+        id: string
+        email: string
+        role: "owner" | "host"
+        user_id: string | null
+        invited_at: string
+        accepted_at: string | null
+      }>
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user has access to session
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  const { data: hosts, error } = await supabase
+    .from("session_hosts")
+    .select("id, email, role, user_id, invited_at, accepted_at")
+    .eq("session_id", sessionId)
+    .order("invited_at", { ascending: true })
+
+  if (error) {
+    return { ok: false, error: error.message }
+  }
+
+  return {
+    ok: true,
+    hosts: (hosts || []).map((h) => ({
+      id: h.id,
+      email: h.email,
+      role: h.role as "owner" | "host",
+      user_id: h.user_id,
+      invited_at: h.invited_at,
+      accepted_at: h.accepted_at,
+    })),
+  }
+}
+
 async function reconcileHostParticipantForSession({
   supabase,
   sessionId,
@@ -111,23 +324,60 @@ export async function getHostLiveSessions(): Promise<
   }
 
   // Get all live (published) sessions for this host
+  // First try via session_hosts (new multi-host system)
+  // Fallback to host_id (legacy sessions created before migration)
   // Only returns sessions with status = 'open' (published/live sessions)
-  // Sessions with status = 'draft' are excluded (unpublished sessions)
-  // Limit to 2 and ensure no duplicates
-  const { data: sessions, error } = await supabase
-    .from("sessions")
-    .select("id, title, start_at, location, capacity, cover_url, sport, host_slug, public_code")
-    .eq("host_id", userId)
-    .eq("status", "open") // Only live/published sessions
-    .order("created_at", { ascending: false })
-    .limit(2)
+  
+  // Method 1: Via session_hosts (preferred)
+  const { data: sessionHosts, error: sessionHostsError } = await supabase
+    .from("session_hosts")
+    .select(`
+      session_id,
+      sessions!inner (
+        id,
+        title,
+        start_at,
+        location,
+        capacity,
+        cover_url,
+        sport,
+        host_slug,
+        public_code,
+        status,
+        created_at
+      )
+    `)
+    .eq("user_id", userId)
+    .eq("sessions.status", "open")
+    .order("sessions.created_at", { ascending: false })
 
-  if (error) {
-    return { ok: false, error: error.message }
+  // Method 2: Fallback to host_id for legacy sessions (if session_hosts query fails or returns empty)
+  let legacySessions: any[] = []
+  if (sessionHostsError || !sessionHosts || sessionHosts.length === 0) {
+    const { data: legacyData, error: legacyError } = await supabase
+      .from("sessions")
+      .select("id, title, start_at, location, capacity, cover_url, sport, host_slug, public_code, status, created_at")
+      .eq("host_id", userId)
+      .eq("status", "open")
+      .order("created_at", { ascending: false })
+      .limit(2)
+
+    if (!legacyError && legacyData) {
+      legacySessions = legacyData
+    }
   }
 
-  // Deduplicate by id (in case of any edge cases)
-  const uniqueSessions = Array.from(new Map((sessions || []).map(s => [s.id, s])).values())
+  // Extract sessions from session_hosts join result
+  const sessionListFromHosts = (sessionHosts || [])
+    .map((sh: any) => {
+      const session = Array.isArray(sh.sessions) ? sh.sessions[0] : sh.sessions
+      return session
+    })
+    .filter((s: any) => s !== null && s !== undefined)
+
+  // Combine both sources and deduplicate by id
+  const allSessions = [...sessionListFromHosts, ...legacySessions]
+  const uniqueSessions = Array.from(new Map(allSessions.map((s: any) => [s.id, s])).values())
 
   return {
     ok: true,
@@ -147,19 +397,10 @@ export async function updateSessionHostName(sessionId: string, hostName: string 
     throw new Error("Unauthorized")
   }
 
-  // Verify session belongs to user
-  const { data: session, error: fetchError } = await supabase
-    .from("sessions")
-    .select("host_id")
-    .eq("id", sessionId)
-    .single()
-
-  if (fetchError || !session) {
-    throw new Error("Session not found")
-  }
-
-  if (session.host_id !== userId) {
-    throw new Error("Unauthorized: You don't own this session")
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    throw new Error(access.error || "Unauthorized: You don't have access to this session")
   }
 
   // Update session hostName
@@ -195,19 +436,10 @@ export async function updateSessionContainerOverlay(sessionId: string, enabled: 
     throw new Error("Unauthorized")
   }
 
-  // Verify session belongs to user
-  const { data: session, error: fetchError } = await supabase
-    .from("sessions")
-    .select("host_id")
-    .eq("id", sessionId)
-    .single()
-
-  if (fetchError || !session) {
-    throw new Error("Session not found")
-  }
-
-  if (session.host_id !== userId) {
-    throw new Error("Unauthorized: You don't own this session")
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    throw new Error(access.error || "Unauthorized: You don't have access to this session")
   }
 
   // Update session container overlay preference
@@ -249,19 +481,10 @@ export async function updateSessionWaitlistEnabled(sessionId: string, enabled: b
     throw new Error("Unauthorized")
   }
 
-  // Verify session belongs to user
-  const { data: session, error: fetchError } = await supabase
-    .from("sessions")
-    .select("host_id")
-    .eq("id", sessionId)
-    .single()
-
-  if (fetchError || !session) {
-    throw new Error("Session not found")
-  }
-
-  if (session.host_id !== userId) {
-    throw new Error("Unauthorized: You don't own this session")
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    throw new Error(access.error || "Unauthorized: You don't have access to this session")
   }
 
   // Update session waitlist enabled preference
@@ -303,19 +526,10 @@ export async function updateSessionCoverUrl(sessionId: string, coverUrl: string 
     throw new Error("Unauthorized")
   }
 
-  // Verify session belongs to user
-  const { data: session, error: fetchError } = await supabase
-    .from("sessions")
-    .select("host_id")
-    .eq("id", sessionId)
-    .single()
-
-  if (fetchError || !session) {
-    throw new Error("Session not found")
-  }
-
-  if (session.host_id !== userId) {
-    throw new Error("Unauthorized: You don't own this session")
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    throw new Error(access.error || "Unauthorized: You don't have access to this session")
   }
 
   // Update session cover_url
@@ -361,19 +575,21 @@ export async function getPublishedSessionInfo(
     return { ok: false, error: "Unauthorized" }
   }
 
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
   // Get session with public_code, host_slug, and host_name for share text
   const { data: session, error: fetchError } = await supabase
     .from("sessions")
-    .select("host_id, public_code, host_slug, host_name, status")
+    .select("public_code, host_slug, host_name, status")
     .eq("id", sessionId)
     .single()
 
   if (fetchError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   const isPublished = session.status === "open" && !!session.public_code
@@ -424,6 +640,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       hostSlug: string | null
       publicCode: string | null
       waitlistEnabled: boolean
+      role: "owner" | "host" // User's role for this session
       allParticipants?: Array<{
         id: string
         display_name: string
@@ -441,19 +658,20 @@ export async function getSessionAnalytics(sessionId: string): Promise<
     return { ok: false, error: "Unauthorized" }
   }
 
-  // Get session with capacity and verify ownership
+  // Get session with capacity and verify access via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id, capacity, status, start_at, host_slug, public_code, price")
+    .select("id, capacity, status, start_at, host_slug, public_code, price")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized" }
   }
 
   const capacity = session.capacity || 0
@@ -600,6 +818,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
       pull_out_reason: p.pull_out_reason || null,
       pull_out_seen: p.pull_out_seen || false,
     })),
+    role: access.role, // Include role in response
   }
 }
 
@@ -677,9 +896,10 @@ export async function publishSession(
       .single()
 
     if (!fetchError && fetchedSession) {
-      // Session exists, verify ownership
-      if (fetchedSession.host_id !== userId) {
-        return { ok: false, error: "Unauthorized: You don't own this session" }
+      // Session exists, verify access via session_hosts
+      const access = await getSessionAccess(fetchedSession.id)
+      if (!access.ok) {
+        return { ok: false, error: "Unauthorized: You don't have access to this session" }
       }
       session = fetchedSession
       actualSessionId = fetchedSession.id
@@ -688,7 +908,12 @@ export async function publishSession(
 
   // If session doesn't exist, create it
   if (!session) {
-    const { data: newSession, error: createError } = await supabase
+    // Use admin client for session creation to avoid RLS issues
+    // We'll create session_hosts row immediately after, but using admin client ensures
+    // the session insert succeeds even if there are RLS timing issues
+    const adminClient = createAdminClient()
+    
+    const { data: newSession, error: createError } = await adminClient
       .from("sessions")
       .insert({
         host_id: userId,
@@ -720,6 +945,62 @@ export async function publishSession(
 
     session = newSession
     actualSessionId = newSession.id
+
+    // Create owner row in session_hosts for new session
+    // Use admin client to bypass RLS since this is the first owner row (chicken-and-egg problem)
+    const { data: { user } } = await supabase.auth.getUser()
+    const userEmail = user?.email || "unknown@example.com"
+    
+    const { error: ownerInsertError } = await adminClient
+      .from("session_hosts")
+      .insert({
+        session_id: actualSessionId,
+        email: userEmail.toLowerCase(),
+        user_id: userId,
+        role: "owner",
+        invited_at: new Date().toISOString(),
+        accepted_at: new Date().toISOString(),
+      })
+
+    if (ownerInsertError) {
+      // This is critical - if we can't create the owner row, the session won't be accessible
+      // Return error instead of just logging
+      return { ok: false, error: `Failed to create owner access: ${ownerInsertError.message}` }
+    } else {
+      logInfo("owner_row_created", withTrace({ sessionId: actualSessionId }, traceId))
+    }
+  } else {
+    // For existing session, ensure owner row exists (backfill for sessions created before migration)
+    const { data: existingOwner } = await supabase
+      .from("session_hosts")
+      .select("id")
+      .eq("session_id", actualSessionId)
+      .eq("role", "owner")
+      .single()
+
+    if (!existingOwner) {
+      // Backfill owner row - use admin client since RLS might block if session was created before migration
+      const { data: { user } } = await supabase.auth.getUser()
+      const userEmail = user?.email || "unknown@example.com"
+      const adminClient = createAdminClient()
+      
+      const { error: ownerInsertError } = await adminClient
+        .from("session_hosts")
+        .insert({
+          session_id: actualSessionId,
+          email: userEmail.toLowerCase(),
+          user_id: userId,
+          role: "owner",
+          invited_at: new Date().toISOString(),
+          accepted_at: new Date().toISOString(),
+        })
+
+      if (ownerInsertError) {
+        logWarn("owner_row_backfill_failed", withTrace({ sessionId: actualSessionId, error: ownerInsertError.message }, traceId))
+      } else {
+        logInfo("owner_row_backfilled", withTrace({ sessionId: actualSessionId }, traceId))
+      }
+    }
   }
 
   if (!actualSessionId) {
@@ -763,18 +1044,22 @@ export async function publishSession(
   // Check if host already has 2 live sessions (enforce max 2 concurrent live invites)
   // Only check if current session is not yet published (idempotent: allow re-publishing existing)
   if (!session.public_code || session.status !== "open") {
-    const { data: liveSessions, error: liveCountError } = await supabase
-      .from("sessions")
-      .select("id")
-      .eq("host_id", userId)
-      .eq("status", "open")
+    const { data: liveSessionHosts, error: liveCountError } = await supabase
+      .from("session_hosts")
+      .select("session_id, sessions!inner(id, status)")
+      .eq("user_id", userId)
+      .eq("sessions.status", "open")
 
     if (liveCountError) {
       return { ok: false, error: "Failed to check live session count" }
     }
 
     // Count live sessions excluding current session (if it exists in the list)
-    const liveCount = liveSessions?.filter((s) => s.id !== actualSessionId).length || 0
+    const liveSessions = (liveSessionHosts || []).map((sh: any) => {
+      const session = Array.isArray(sh.sessions) ? sh.sessions[0] : sh.sessions
+      return session
+    }).filter((s: any) => s && s.id !== actualSessionId)
+    const liveCount = liveSessions.length
 
     // If host already has 2 live sessions, block publishing this one
     if (liveCount >= 2) {
@@ -839,7 +1124,9 @@ export async function publishSession(
     true
 
   // Update session with public_code, host_slug, and status = 'open'
-  const { error: updateError } = await supabase
+  // Use admin client to ensure update succeeds even if RLS hasn't fully propagated session_hosts
+  const adminClient = createAdminClient()
+  const { error: updateError } = await adminClient
     .from("sessions")
     .update({
       public_code: publicCode,
@@ -859,6 +1146,33 @@ export async function publishSession(
 
   if (updateError) {
     return { ok: false, error: updateError.message || "Failed to publish session" }
+  }
+
+  // Create default session prompts (attendance reminder and payment summary)
+  // Wrap in try-catch to handle gracefully if session_prompts table doesn't exist
+  try {
+    const promptsResult = await createSessionPrompts(actualSessionId)
+    if (!promptsResult.ok) {
+      // Log but don't fail - prompts are helpful but not critical
+      logWarn("prompts_creation_failed", withTrace({ sessionId: actualSessionId, error: promptsResult.error }, traceId))
+    }
+  } catch (error: any) {
+    // Handle case where session_prompts table doesn't exist
+    // This is a non-critical feature, so we don't fail the publish
+    const errorMessage = error?.message || String(error)
+    if (errorMessage.includes("does not exist") || errorMessage.includes("relation") || errorMessage.includes("session_prompts")) {
+      logWarn("prompts_table_missing", withTrace({ 
+        sessionId: actualSessionId, 
+        error: "session_prompts table does not exist - prompts feature disabled",
+        note: "Publish will continue successfully without prompts"
+      }, traceId))
+    } else {
+      // Unexpected error - log but don't fail
+      logWarn("prompts_creation_unexpected_error", withTrace({ 
+        sessionId: actualSessionId, 
+        error: errorMessage 
+      }, traceId))
+    }
   }
 
   // Materialize host participant ONLY on publish/update, based on host_joins_session intent.
@@ -917,19 +1231,21 @@ export async function updateLiveSession(
     (user as any)?.user_metadata?.picture ||
     null
 
-  // Verify session belongs to user and is live
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session is live
   const { data: session, error: fetchError } = await supabase
     .from("sessions")
-    .select("id, host_id, public_code, host_slug, status")
+    .select("id, public_code, host_slug, status")
     .eq("id", sessionId)
     .single()
 
   if (fetchError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   if (session.status !== "open") {
@@ -963,7 +1279,6 @@ export async function updateLiveSession(
       // NOTE: status remains 'open' (not changed)
     })
     .eq("id", sessionId)
-    .eq("host_id", userId)
 
   if (updateError) {
     return { ok: false, error: updateError.message || "Failed to update session" }
@@ -1006,10 +1321,17 @@ export async function unpublishSession(
     return { ok: false, error: "Unauthorized" }
   }
 
-  // Verify session belongs to user and is currently published
+  // Verify user is owner (only owners can unpublish)
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok || access.role !== "owner") {
+    console.error("[unpublishSession] Unauthorized: User is not owner", { sessionId, userId, role: access.ok ? access.role : "no access" })
+    return { ok: false, error: "Unauthorized: Only the session owner can unpublish" }
+  }
+
+  // Verify session is currently published
   const { data: session, error: fetchError } = await supabase
     .from("sessions")
-    .select("host_id, status")
+    .select("status")
     .eq("id", sessionId)
     .single()
 
@@ -1018,24 +1340,18 @@ export async function unpublishSession(
     return { ok: false, error: "Session not found" }
   }
 
-  if (session.host_id !== userId) {
-    console.error("[unpublishSession] Unauthorized: Session doesn't belong to user", { sessionId, sessionHostId: session.host_id, userId })
-    return { ok: false, error: "Unauthorized: You don't own this session" }
-  }
-
   if (session.status !== "open") {
     // Idempotent: if already not published, return success
     console.log("[unpublishSession] Session is not published, treating as already removed", { sessionId, status: session.status })
     return { ok: true }
   }
 
-  // Hard-delete the session row (CASCADE will automatically delete all related data)
-  // Filter by both id and host_id for safety (RLS policy also enforces this)
+  // Hard-delete the session row (CASCADE will automatically delete all related data including session_hosts)
+  // RLS policy enforces owner-only deletion
   const { error: deleteError, count } = await supabase
     .from("sessions")
     .delete()
     .eq("id", sessionId)
-    .eq("host_id", userId) // Extra safety: ensure we only delete own sessions
 
   if (deleteError) {
     console.error("[unpublishSession] DB delete error:", { sessionId, userId, error: deleteError.message, code: deleteError.code })
@@ -1103,12 +1419,17 @@ export async function getSessionDataForDraft(
     return { ok: false, error: "Unauthorized" }
   }
 
-  // Verify session belongs to user
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Get session data
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
     .select("*")
     .eq("id", sessionId)
-    .eq("host_id", userId)
     .single()
 
   if (sessionError || !session) {
@@ -1167,21 +1488,23 @@ export async function updateDraftSession(
     return { ok: false, error: "Unauthorized" }
   }
 
-  // Verify session belongs to user and is a draft
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    console.error("[updateDraftSession] Unauthorized:", { sessionId, userId, error: access.error })
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session is a draft
   const { data: session, error: fetchError } = await supabase
     .from("sessions")
-    .select("host_id, status")
+    .select("status")
     .eq("id", sessionId)
     .single()
 
   if (fetchError || !session) {
     console.error("[updateDraftSession] Session not found:", { sessionId, error: fetchError?.message })
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    console.error("[updateDraftSession] Unauthorized: Session doesn't belong to user", { sessionId, sessionHostId: session.host_id, userId })
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   if (session.status !== "draft") {
@@ -1197,7 +1520,6 @@ export async function updateDraftSession(
       updated_at: new Date().toISOString(),
     })
     .eq("id", sessionId)
-    .eq("host_id", userId) // Extra safety: ensure we only update own sessions
 
   if (updateError) {
     console.error("[updateDraftSession] DB update error:", { sessionId, userId, error: updateError.message, code: updateError.code })
@@ -1271,18 +1593,21 @@ export async function getPaymentUploadsForSession(
   }
 
   // Verify session belongs to host
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session exists
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Fetch all confirmed participants for this session
@@ -1407,18 +1732,21 @@ export async function confirmParticipantPaid(
   }
 
   // Verify session belongs to host
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session exists
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Verify payment proof belongs to this session
@@ -1469,18 +1797,21 @@ export async function markParticipantPaidByCash(
   }
 
   // Verify session belongs to host
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session exists
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Verify participant belongs to this session and is confirmed
@@ -1574,18 +1905,21 @@ export async function addParticipant(
   }
 
   // Verify session belongs to host
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session exists
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Validate name
@@ -1793,18 +2127,21 @@ export async function removeParticipant(
   }
 
   // Verify session belongs to host
+  // Verify user has access to session via session_hosts
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized: You don't have access to this session" }
+  }
+
+  // Verify session exists
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id")
+    .select("id")
     .eq("id", sessionId)
     .single()
 
   if (sessionError || !session) {
     return { ok: false, error: "Session not found" }
-  }
-
-  if (session.host_id !== userId) {
-    return { ok: false, error: "Unauthorized: You don't own this session" }
   }
 
   // Use the auto-promote logic
@@ -1818,4 +2155,442 @@ export async function removeParticipant(
   revalidatePath(`/host/sessions/${sessionId}/edit`)
 
   return { ok: true }
+}
+
+// ============================================================================
+// Session Prompts Management
+// ============================================================================
+
+/**
+ * Create default session prompts when session is published
+ * Creates attendance_reminder (-180 min) and payment_summary (+120 min)
+ */
+export async function createSessionPrompts(
+  sessionId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user has access to session
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Check if prompts already exist
+  const { data: existingPrompts } = await supabase
+    .from("session_prompts")
+    .select("id, type")
+    .eq("session_id", sessionId)
+
+  const existingTypes = new Set(existingPrompts?.map(p => p.type) || [])
+
+  // Create attendance reminder if it doesn't exist
+  if (!existingTypes.has("attendance_reminder")) {
+    const { error: attendanceError } = await supabase
+      .from("session_prompts")
+      .insert({
+        session_id: sessionId,
+        type: "attendance_reminder",
+        default_offset_minutes: -180, // 3 hours before
+        custom_offset_minutes: -180, // Set to default initially (enabled by default)
+      })
+
+    if (attendanceError) {
+      console.error("[createSessionPrompts] Error creating attendance reminder:", attendanceError)
+      return { ok: false, error: attendanceError.message }
+    }
+  }
+
+  // Create payment summary if it doesn't exist
+  if (!existingTypes.has("payment_summary")) {
+    const { error: paymentError } = await supabase
+      .from("session_prompts")
+      .insert({
+        session_id: sessionId,
+        type: "payment_summary",
+        default_offset_minutes: 120, // 2 hours after
+        custom_offset_minutes: 120, // Set to default initially (enabled by default)
+      })
+
+    if (paymentError) {
+      console.error("[createSessionPrompts] Error creating payment summary:", paymentError)
+      return { ok: false, error: paymentError.message }
+    }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Get session prompts with evaluation of whether they should show
+ */
+export async function getSessionPrompts(sessionId: string): Promise<
+  | {
+      ok: true
+      prompts: Array<{
+        id: string
+        type: "attendance_reminder" | "payment_summary"
+        defaultOffsetMinutes: number
+        customOffsetMinutes: number | null
+        shownAt: string | null
+        dismissedAt: string | null
+        shouldShow: boolean
+        triggerTime: string | null
+        offsetMinutes: number // effective offset (custom or default)
+      }>
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user has access to session
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Get session to check times and status
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("id, start_at, end_at, status, price")
+    .eq("id", sessionId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  // Get prompts
+  const { data: prompts, error: promptsError } = await supabase
+    .from("session_prompts")
+    .select("*")
+    .eq("session_id", sessionId)
+    .order("type", { ascending: true })
+
+  if (promptsError) {
+    return { ok: false, error: promptsError.message }
+  }
+
+  const now = new Date()
+  const evaluatedPrompts = (prompts || []).map((prompt) => {
+    // Logic per plan: custom_offset_minutes = NULL means disabled
+    // When first created, custom_offset_minutes is NULL, but we want it enabled by default
+    // Solution: When creating prompts, we'll set custom_offset_minutes to default_offset_minutes
+    // So: NULL = disabled (explicitly set), number = enabled (with that offset)
+    // But wait, that means we can't distinguish "use default" from "disabled"
+    // 
+    // Better approach: Use a sentinel value for disabled, or track it differently
+    // For now, let's use: NULL on creation = use default (we'll set it to default value on creation)
+    // NULL after being set = disabled
+    // 
+    // Actually, simplest: When creating, set custom_offset_minutes to default_offset_minutes
+    // Then: NULL = disabled, number = enabled with that offset
+    // But we need to update createSessionPrompts to set the initial value
+    
+    // For evaluation: NULL means disabled, any number means enabled
+    const isDisabled = prompt.custom_offset_minutes === null
+    const offsetMinutes = isDisabled ? prompt.default_offset_minutes : prompt.custom_offset_minutes
+    
+    if (isDisabled) {
+      return {
+        id: prompt.id,
+        type: prompt.type as "attendance_reminder" | "payment_summary",
+        defaultOffsetMinutes: prompt.default_offset_minutes,
+        customOffsetMinutes: prompt.custom_offset_minutes,
+        shownAt: prompt.shown_at,
+        dismissedAt: prompt.dismissed_at,
+        shouldShow: false,
+        triggerTime: null,
+        offsetMinutes: prompt.default_offset_minutes, // For display
+      }
+    }
+
+    // Calculate trigger time based on prompt type
+    let triggerTime: Date | null = null
+    if (prompt.type === "attendance_reminder") {
+      // Trigger before session start
+      if (session.start_at) {
+        const startTime = new Date(session.start_at)
+        triggerTime = new Date(startTime.getTime() + offsetMinutes * 60 * 1000)
+      }
+    } else if (prompt.type === "payment_summary") {
+      // Trigger after session end (or start if no end)
+      const endTime = session.end_at ? new Date(session.end_at) : new Date(session.start_at)
+      triggerTime = new Date(endTime.getTime() + offsetMinutes * 60 * 1000)
+    }
+
+    // Evaluate if should show
+    const shouldShow =
+      session.status === "open" && // Only show for published sessions
+      triggerTime !== null &&
+      now >= triggerTime &&
+      prompt.shown_at === null &&
+      prompt.dismissed_at === null &&
+      // For payment summary, only show if session has price > 0
+      (prompt.type !== "payment_summary" || (session.price !== null && session.price > 0))
+
+    return {
+      id: prompt.id,
+      type: prompt.type as "attendance_reminder" | "payment_summary",
+      defaultOffsetMinutes: prompt.default_offset_minutes,
+      customOffsetMinutes: prompt.custom_offset_minutes,
+      shownAt: prompt.shown_at,
+      dismissedAt: prompt.dismissed_at,
+      shouldShow,
+      triggerTime: triggerTime?.toISOString() || null,
+      offsetMinutes,
+    }
+  })
+
+  return { ok: true, prompts: evaluatedPrompts }
+}
+
+/**
+ * Mark prompt as shown (when message is copied/shared)
+ */
+export async function markPromptShown(
+  promptId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get prompt to verify access
+  const { data: prompt, error: promptError } = await supabase
+    .from("session_prompts")
+    .select("session_id")
+    .eq("id", promptId)
+    .single()
+
+  if (promptError || !prompt) {
+    return { ok: false, error: "Prompt not found" }
+  }
+
+  // Verify access
+  const access = await getSessionAccess(prompt.session_id)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Update shown_at
+  const { error: updateError } = await supabase
+    .from("session_prompts")
+    .update({ shown_at: new Date().toISOString() })
+    .eq("id", promptId)
+
+  if (updateError) {
+    return { ok: false, error: updateError.message }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Mark prompt as dismissed
+ */
+export async function markPromptDismissed(
+  promptId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get prompt to verify access
+  const { data: prompt, error: promptError } = await supabase
+    .from("session_prompts")
+    .select("session_id")
+    .eq("id", promptId)
+    .single()
+
+  if (promptError || !prompt) {
+    return { ok: false, error: "Prompt not found" }
+  }
+
+  // Verify access
+  const access = await getSessionAccess(prompt.session_id)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Update dismissed_at
+  const { error: updateError } = await supabase
+    .from("session_prompts")
+    .update({ dismissed_at: new Date().toISOString() })
+    .eq("id", promptId)
+
+  if (updateError) {
+    return { ok: false, error: updateError.message }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Update prompt offset (for configuration)
+ */
+export async function updatePromptOffset(
+  promptId: string,
+  offsetMinutes: number | null // null to disable
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get prompt to verify access and check role
+  const { data: prompt, error: promptError } = await supabase
+    .from("session_prompts")
+    .select("session_id")
+    .eq("id", promptId)
+    .single()
+
+  if (promptError || !prompt) {
+    return { ok: false, error: "Prompt not found" }
+  }
+
+  // Verify access
+  const access = await getSessionAccess(prompt.session_id)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Only owners can disable (set to null)
+  if (offsetMinutes === null && access.role !== "owner") {
+    return { ok: false, error: "Only owners can disable reminders" }
+  }
+
+  // Update custom_offset_minutes
+  const { error: updateError } = await supabase
+    .from("session_prompts")
+    .update({ custom_offset_minutes: offsetMinutes })
+    .eq("id", promptId)
+
+  if (updateError) {
+    return { ok: false, error: updateError.message }
+  }
+
+  // Revalidate paths
+  revalidatePath(`/host/sessions/${prompt.session_id}/edit`)
+
+  return { ok: true }
+}
+
+/**
+ * Reset prompt (clear shown_at and dismissed_at for manual re-trigger)
+ */
+export async function resetPrompt(
+  promptId: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Get prompt to verify access
+  const { data: prompt, error: promptError } = await supabase
+    .from("session_prompts")
+    .select("session_id")
+    .eq("id", promptId)
+    .single()
+
+  if (promptError || !prompt) {
+    return { ok: false, error: "Prompt not found" }
+  }
+
+  // Verify access
+  const access = await getSessionAccess(prompt.session_id)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Clear shown_at and dismissed_at
+  const { error: updateError } = await supabase
+    .from("session_prompts")
+    .update({
+      shown_at: null,
+      dismissed_at: null,
+    })
+    .eq("id", promptId)
+
+  if (updateError) {
+    return { ok: false, error: updateError.message }
+  }
+
+  return { ok: true }
+}
+
+/**
+ * Get session data for prompt dialogs (title, dates, location, sport, price)
+ */
+export async function getSessionDataForPrompts(
+  sessionId: string
+): Promise<
+  | {
+      ok: true
+      session: {
+        title: string
+        start_at: string
+        end_at: string | null
+        location: string | null
+        sport: string
+        price: number | null
+      }
+    }
+  | { ok: false; error: string }
+> {
+  const supabase = await createClient()
+  const userId = await getUserId(supabase)
+
+  if (!userId) {
+    return { ok: false, error: "Unauthorized" }
+  }
+
+  // Verify user has access to session
+  const access = await getSessionAccess(sessionId)
+  if (!access.ok) {
+    return { ok: false, error: access.error || "Unauthorized" }
+  }
+
+  // Get session data
+  const { data: session, error: sessionError } = await supabase
+    .from("sessions")
+    .select("title, start_at, end_at, location, sport, price")
+    .eq("id", sessionId)
+    .single()
+
+  if (sessionError || !session) {
+    return { ok: false, error: "Session not found" }
+  }
+
+  return {
+    ok: true,
+    session: {
+      title: session.title,
+      start_at: session.start_at,
+      end_at: session.end_at,
+      location: session.location,
+      sport: session.sport,
+      price: session.price,
+    },
+  }
 }

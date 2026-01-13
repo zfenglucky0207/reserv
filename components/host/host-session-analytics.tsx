@@ -16,11 +16,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import { logInfo, logError, logWarn, newTraceId, withTrace } from "@/lib/logger"
-import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight, Plus, X } from "lucide-react"
+import { Ban, CheckCircle2, Clock, Calendar, DollarSign, Users, ChevronRight, Plus, X, Bell } from "lucide-react"
 import { formatDistanceToNow, format, isPast, isFuture, parseISO } from "date-fns"
 import { CopyInviteLinkButton } from "@/components/common/copy-invite-link-button"
 import { SaveDraftGuardModal } from "@/components/host/save-draft-guard-modal"
 import { PaymentsReviewView } from "@/components/host/payments-review-view"
+import { AttendanceReminderDialog } from "@/components/host/attendance-reminder-dialog"
+import { PaymentSummaryDialog } from "@/components/host/payment-summary-dialog"
 
 interface HostSessionAnalyticsProps {
   sessionId: string
@@ -67,8 +69,22 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
   const { toast } = useToast()
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [role, setRole] = useState<"owner" | "host" | null>(null)
   const [unpublishDialogOpen, setUnpublishDialogOpen] = useState(false)
   const [isUnpublishing, setIsUnpublishing] = useState(false)
+  
+  // Manage Access state
+  const [hosts, setHosts] = useState<Array<{
+    id: string
+    email: string
+    role: "owner" | "host"
+    user_id: string | null
+    invited_at: string
+    accepted_at: string | null
+  }>>([])
+  const [inviteEmail, setInviteEmail] = useState("")
+  const [isInviting, setIsInviting] = useState(false)
+  const [manageAccessOpen, setManageAccessOpen] = useState(false)
   
   // Add/Remove participant state
   const [addDialogOpen, setAddDialogOpen] = useState(false)
@@ -87,6 +103,39 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
     display_name: string
     pull_out_reason: string | null
   } | null>(null)
+
+  // Prompt dialogs state
+  const [attendanceDialogOpen, setAttendanceDialogOpen] = useState(false)
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false)
+  const [currentPrompt, setCurrentPrompt] = useState<{
+    id: string
+    type: "attendance_reminder" | "payment_summary"
+  } | null>(null)
+  const [sessionData, setSessionData] = useState<{
+    title: string
+    start_at: string
+    end_at: string | null
+    location: string | null
+    sport: string
+    price: number | null
+  } | null>(null)
+  const [paidParticipantIds, setPaidParticipantIds] = useState<Set<string>>(new Set())
+  const [manualRemindersDialogOpen, setManualRemindersDialogOpen] = useState(false)
+  const [availablePrompts, setAvailablePrompts] = useState<Array<{
+    id: string
+    type: "attendance_reminder" | "payment_summary"
+    defaultOffsetMinutes: number
+    customOffsetMinutes: number | null
+    shownAt: string | null
+    dismissedAt: string | null
+  }>>([])
+  const [promptConfigs, setPromptConfigs] = useState<Array<{
+    id: string
+    type: "attendance_reminder" | "payment_summary"
+    defaultOffsetMinutes: number
+    customOffsetMinutes: number | null
+  }>>([])
+  const [isSavingPromptConfig, setIsSavingPromptConfig] = useState(false)
 
   // Check if we should show payments view
   const mode = searchParams.get("mode")
@@ -108,32 +157,105 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
   useEffect(() => {
     const fetchAnalytics = async () => {
       try {
-        const { getSessionAnalytics } = await import("@/app/host/sessions/[id]/actions")
-        const result = await getSessionAnalytics(sessionId)
-        if (result.ok) {
+        const { getSessionAnalytics, getSessionAccess, getSessionHosts } = await import("@/app/host/sessions/[id]/actions")
+        const [analyticsResult, accessResult, hostsResult] = await Promise.all([
+          getSessionAnalytics(sessionId),
+          getSessionAccess(sessionId),
+          getSessionHosts(sessionId),
+        ])
+        
+        if (analyticsResult.ok) {
           setAnalytics({
-            attendance: result.attendance,
-            payments: result.payments,
-            acceptedList: result.acceptedList,
-            declinedList: result.declinedList,
-            waitlistedList: result.waitlistedList,
-            viewedCount: result.viewedCount,
-            pricePerPerson: result.pricePerPerson,
-            sessionStatus: result.sessionStatus,
-            startAt: result.startAt,
-            hostSlug: result.hostSlug,
-            publicCode: result.publicCode,
-            waitlistEnabled: result.waitlistEnabled,
-            allParticipants: result.allParticipants || [],
+            attendance: analyticsResult.attendance,
+            payments: analyticsResult.payments,
+            acceptedList: analyticsResult.acceptedList,
+            declinedList: analyticsResult.declinedList,
+            waitlistedList: analyticsResult.waitlistedList,
+            viewedCount: analyticsResult.viewedCount,
+            pricePerPerson: analyticsResult.pricePerPerson,
+            sessionStatus: analyticsResult.sessionStatus,
+            startAt: analyticsResult.startAt,
+            hostSlug: analyticsResult.hostSlug,
+            publicCode: analyticsResult.publicCode,
+            waitlistEnabled: analyticsResult.waitlistEnabled,
+            allParticipants: analyticsResult.allParticipants || [],
           })
           
           // Initialize requirePaymentProof based on price
-          if (result.pricePerPerson && result.pricePerPerson > 0) {
+          if (analyticsResult.pricePerPerson && analyticsResult.pricePerPerson > 0) {
             setQuickSettings((prev) => ({ ...prev, requirePaymentProof: true }))
           }
           
           // Initialize waitlistEnabled from DB
-          setQuickSettings((prev) => ({ ...prev, waitlistEnabled: result.waitlistEnabled }))
+          setQuickSettings((prev) => ({ ...prev, waitlistEnabled: analyticsResult.waitlistEnabled }))
+        }
+        
+        if (accessResult.ok) {
+          setRole(accessResult.role)
+        }
+        
+        if (hostsResult.ok) {
+          setHosts(hostsResult.hosts)
+        }
+
+        // Fetch prompt configurations
+        if (analyticsResult.ok && analyticsResult.sessionStatus === "open") {
+          const { getSessionPrompts } = await import("@/app/host/sessions/[id]/actions")
+          const promptsResult = await getSessionPrompts(sessionId)
+          if (promptsResult.ok) {
+            setPromptConfigs(promptsResult.prompts.map(p => ({
+              id: p.id,
+              type: p.type,
+              defaultOffsetMinutes: p.defaultOffsetMinutes,
+              customOffsetMinutes: p.customOffsetMinutes,
+            })))
+          }
+        }
+
+        // Fetch prompts and check if dialogs should show
+        if (analyticsResult.ok && analyticsResult.sessionStatus === "open") {
+          const { getSessionPrompts, getSessionDataForPrompts } = await import("@/app/host/sessions/[id]/actions")
+          
+          const [promptsResult, sessionDataResult] = await Promise.all([
+            getSessionPrompts(sessionId),
+            getSessionDataForPrompts(sessionId),
+          ])
+          
+          if (promptsResult.ok && sessionDataResult.ok) {
+            setSessionData(sessionDataResult.session)
+
+            // For payment summary, fetch paid participants
+            if (promptsResult.prompts.some(p => p.type === "payment_summary" && p.shouldShow)) {
+              const { getPaymentUploadsForSession } = await import("@/app/host/sessions/[id]/actions")
+              const paymentResult = await getPaymentUploadsForSession(sessionId)
+              
+              if (paymentResult.ok) {
+                // Get participant IDs that have approved payments
+                const paidIds = new Set<string>()
+                paymentResult.uploads.forEach((upload) => {
+                  if (upload.paymentStatus === "approved") {
+                    paidIds.add(upload.participantId)
+                  }
+                })
+                setPaidParticipantIds(paidIds)
+              }
+            }
+
+            // Check for prompts that should show
+            for (const prompt of promptsResult.prompts) {
+              if (prompt.shouldShow) {
+                setCurrentPrompt({ id: prompt.id, type: prompt.type })
+                
+                if (prompt.type === "attendance_reminder") {
+                  setAttendanceDialogOpen(true)
+                  break // Only show one dialog at a time
+                } else if (prompt.type === "payment_summary") {
+                  setPaymentDialogOpen(true)
+                  break
+                }
+              }
+            }
+          }
         }
       } catch (error) {
         console.error("Failed to fetch analytics:", error)
@@ -416,8 +538,17 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
     }
   }
 
-  // Handle unpublish
+  // Handle unpublish (owner only)
   const handleUnpublish = async () => {
+    if (role !== "owner") {
+      toast({
+        title: "Unauthorized",
+        description: "Only the session owner can unpublish.",
+        variant: "destructive",
+      })
+      return
+    }
+    
     setIsUnpublishing(true)
     try {
       const { unpublishSession } = await import("@/app/host/sessions/[id]/actions")
@@ -447,6 +578,90 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
       })
     } finally {
       setIsUnpublishing(false)
+    }
+  }
+
+  // Handle invite host
+  const handleInviteHost = async () => {
+    const trimmedEmail = inviteEmail.trim().toLowerCase()
+    
+    if (!trimmedEmail || !trimmedEmail.includes("@")) {
+      toast({
+        title: "Invalid email",
+        description: "Please enter a valid email address.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    setIsInviting(true)
+    try {
+      const { inviteHost, getSessionHosts } = await import("@/app/host/sessions/[id]/actions")
+      const result = await inviteHost(sessionId, trimmedEmail)
+      
+      if (!result.ok) {
+        toast({
+          title: "Invite failed",
+          description: result.error || "Failed to send invite.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      toast({
+        title: "Invite sent",
+        description: `${trimmedEmail} has been invited to manage this session.`,
+      })
+
+      setInviteEmail("")
+      
+      // Refresh hosts list
+      const hostsResult = await getSessionHosts(sessionId)
+      if (hostsResult.ok) {
+        setHosts(hostsResult.hosts)
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to send invite.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsInviting(false)
+    }
+  }
+
+  // Handle remove host
+  const handleRemoveHost = async (hostEmail: string) => {
+    try {
+      const { removeHost, getSessionHosts } = await import("@/app/host/sessions/[id]/actions")
+      const result = await removeHost(sessionId, hostEmail)
+      
+      if (!result.ok) {
+        toast({
+          title: "Remove failed",
+          description: result.error || "Failed to remove host.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      toast({
+        title: "Host removed",
+        description: `${hostEmail} no longer has access to this session.`,
+      })
+
+      // Refresh hosts list
+      const hostsResult = await getSessionHosts(sessionId)
+      if (hostsResult.ok) {
+        setHosts(hostsResult.hosts)
+      }
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error?.message || "Failed to remove host.",
+        variant: "destructive",
+      })
     }
   }
 
@@ -484,20 +699,63 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
       <div className="space-y-4 p-4 pb-[200px]">
         {/* Page Title */}
         <div className="mb-2 flex items-center justify-between gap-3">
-          <h1 className={cn("text-2xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
-            Session control
-          </h1>
-          <CopyInviteLinkButton
-            sessionId={sessionId}
-            variant="outline"
-            size="sm"
-            className={cn(
-              "shrink-0",
-              uiMode === "dark"
-                ? "border-white/20 bg-white/5 text-white hover:bg-white/10"
-                : "border-black/20 bg-black/5 text-black hover:bg-black/10"
+          <div className="flex items-center gap-2">
+            <h1 className={cn("text-2xl font-semibold", uiMode === "dark" ? "text-white" : "text-black")}>
+              Session control
+            </h1>
+            {role && (
+              <Badge className={cn(
+                "px-2 py-0.5 text-xs font-medium",
+                role === "owner"
+                  ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                  : "bg-gray-500/20 text-gray-400 border border-gray-500/30"
+              )}>
+                {role === "owner" ? "Owner" : "Host (Editor)"}
+              </Badge>
             )}
-          />
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={async () => {
+                // Fetch all prompts (even dismissed ones) for manual trigger
+                const { getSessionPrompts } = await import("@/app/host/sessions/[id]/actions")
+                const promptsResult = await getSessionPrompts(sessionId)
+                if (promptsResult.ok) {
+                  setAvailablePrompts(promptsResult.prompts.map(p => ({
+                    id: p.id,
+                    type: p.type,
+                    defaultOffsetMinutes: p.defaultOffsetMinutes,
+                    customOffsetMinutes: p.customOffsetMinutes,
+                    shownAt: p.shownAt,
+                    dismissedAt: p.dismissedAt,
+                  })))
+                  setManualRemindersDialogOpen(true)
+                }
+              }}
+              variant="outline"
+              size="sm"
+              className={cn(
+                "shrink-0",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  : "border-black/20 bg-black/5 text-black hover:bg-black/10"
+              )}
+            >
+              <Bell className="w-4 h-4 mr-2" />
+              Reminders
+            </Button>
+            <CopyInviteLinkButton
+              sessionId={sessionId}
+              variant="outline"
+              size="sm"
+              className={cn(
+                "shrink-0",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 text-white hover:bg-white/10"
+                  : "border-black/20 bg-black/5 text-black hover:bg-black/10"
+              )}
+            />
+          </div>
         </div>
 
         {/* SECTION 1: Session Status */}
@@ -846,6 +1104,268 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             </div>
           </Card>
         </motion.div>
+
+        {/* SECTION 5: Smart Reminders */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.4, delay: 0.35 }}
+        >
+          <Card className={cn("p-4", glassCard)}>
+            <h3 className={cn("text-sm font-semibold mb-4", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+              Smart reminders
+            </h3>
+            <div className="space-y-4">
+              {promptConfigs.map((prompt) => {
+                const isAttendance = prompt.type === "attendance_reminder"
+                // According to the plan: custom_offset_minutes = NULL means disabled
+                // custom_offset_minutes = number means enabled (with that offset)
+                // To use default, we set custom_offset_minutes to default_offset_minutes value
+                const isEnabled = prompt.customOffsetMinutes !== null
+                // If enabled, use custom offset if set, otherwise it should be set to default value
+                const effectiveOffset = prompt.customOffsetMinutes ?? prompt.defaultOffsetMinutes
+                
+                // Convert minutes to hours for display
+                const offsetHours = Math.abs(effectiveOffset) / 60
+                const isBefore = effectiveOffset < 0
+                
+                // Options for time selector
+                const timeOptions = isAttendance
+                  ? [1, 2, 3, 6, 12, 24] // hours before
+                  : [0.5, 1, 2, 3, 6, 12, 24] // hours after
+
+                return (
+                  <div key={prompt.id} className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1">
+                        <Label className={cn("text-sm font-medium", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                          {isAttendance ? "Attendance Reminder" : "Payment Summary"}
+                        </Label>
+                        <p className={cn("text-xs mt-1", uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+                          {isAttendance
+                            ? "Remind participants before session starts"
+                            : "Share payment summary after session ends"}
+                        </p>
+                      </div>
+                      <Switch
+                        checked={isEnabled}
+                        onCheckedChange={async (checked) => {
+                          if (!checked && role !== "owner") {
+                            toast({
+                              title: "Unauthorized",
+                              description: "Only owners can disable reminders.",
+                              variant: "destructive",
+                            })
+                            return
+                          }
+                          
+                          setIsSavingPromptConfig(true)
+                          try {
+                            const { updatePromptOffset } = await import("@/app/host/sessions/[id]/actions")
+                            // When enabling, set to default offset value (so it uses default but is enabled)
+                            // When disabling, set to null
+                            const newOffset = checked ? prompt.defaultOffsetMinutes : null
+                            const result = await updatePromptOffset(prompt.id, newOffset)
+                            if (result.ok) {
+                              setPromptConfigs(prev => prev.map(p => 
+                                p.id === prompt.id 
+                                  ? { ...p, customOffsetMinutes: newOffset }
+                                  : p
+                              ))
+                              toast({
+                                title: checked ? "Reminder enabled" : "Reminder disabled",
+                                description: checked ? "Reminder will appear at the configured time." : "Reminder has been disabled.",
+                              })
+                            } else {
+                              toast({
+                                title: "Failed to update",
+                                description: result.error || "Please try again.",
+                                variant: "destructive",
+                              })
+                            }
+                          } catch (error) {
+                            toast({
+                              title: "Error",
+                              description: "Failed to update reminder settings.",
+                              variant: "destructive",
+                            })
+                          } finally {
+                            setIsSavingPromptConfig(false)
+                          }
+                        }}
+                        disabled={isSavingPromptConfig}
+                      />
+                    </div>
+                    
+                    {isEnabled && (
+                      <div className="space-y-2">
+                        <Label className={cn("text-xs", uiMode === "dark" ? "text-white/70" : "text-black/70")}>
+                          Timing
+                        </Label>
+                        <Select
+                          value={offsetHours.toString()}
+                          onValueChange={async (value) => {
+                            const hours = parseFloat(value)
+                            const minutes = isAttendance ? -hours * 60 : hours * 60
+                            
+                            setIsSavingPromptConfig(true)
+                            try {
+                              const { updatePromptOffset } = await import("@/app/host/sessions/[id]/actions")
+                              const result = await updatePromptOffset(prompt.id, minutes)
+                              if (result.ok) {
+                                setPromptConfigs(prev => prev.map(p => 
+                                  p.id === prompt.id 
+                                    ? { ...p, customOffsetMinutes: minutes }
+                                    : p
+                                ))
+                                toast({
+                                  title: "Timing updated",
+                                  description: `Reminder will appear ${isBefore ? "before" : "after"} session ${Math.abs(hours)} hour${hours !== 1 ? "s" : ""}.`,
+                                })
+                              } else {
+                                toast({
+                                  title: "Failed to update",
+                                  description: result.error || "Please try again.",
+                                  variant: "destructive",
+                                })
+                              }
+                            } catch (error) {
+                              toast({
+                                title: "Error",
+                                description: "Failed to update timing.",
+                                variant: "destructive",
+                              })
+                            } finally {
+                              setIsSavingPromptConfig(false)
+                            }
+                          }}
+                          disabled={isSavingPromptConfig}
+                        >
+                          <SelectTrigger className={cn(
+                            "w-full",
+                            uiMode === "dark"
+                              ? "border-white/20 bg-white/5 text-white"
+                              : "border-black/20 bg-black/5 text-black"
+                          )}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {timeOptions.map((hours) => (
+                              <SelectItem key={hours} value={hours.toString()}>
+                                {isAttendance 
+                                  ? `${hours} hour${hours !== 1 ? "s" : ""} before`
+                                  : hours === 0.5
+                                  ? "30 minutes after"
+                                  : `${hours} hour${hours !== 1 ? "s" : ""} after`}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          </Card>
+        </motion.div>
+
+        {/* SECTION 6: Manage Access (Owner only) */}
+        {role === "owner" && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.4 }}
+          >
+            <Card className={cn("p-4", glassCard)}>
+              <h3 className={cn("text-sm font-semibold mb-4", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                Manage access
+              </h3>
+              <div className="space-y-4">
+                {/* Host list */}
+                <div className="space-y-2">
+                  {hosts.map((host) => (
+                    <div
+                      key={host.id}
+                      className={cn(
+                        "flex items-center justify-between p-2 rounded-lg",
+                        uiMode === "dark" ? "bg-white/5" : "bg-black/5"
+                      )}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                          {host.email}
+                        </span>
+                        <Badge className={cn(
+                          "px-2 py-0.5 text-xs",
+                          host.role === "owner"
+                            ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            : "bg-gray-500/20 text-gray-400 border border-gray-500/30"
+                        )}>
+                          {host.role === "owner" ? "Owner" : "Host"}
+                        </Badge>
+                        {!host.accepted_at && (
+                          <Badge className="px-2 py-0.5 text-xs bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                            Pending
+                          </Badge>
+                        )}
+                      </div>
+                      {host.role === "host" && (
+                        <Button
+                          onClick={() => handleRemoveHost(host.email)}
+                          variant="ghost"
+                          size="sm"
+                          className={cn(
+                            "h-7 text-xs",
+                            uiMode === "dark"
+                              ? "text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                              : "text-red-600 hover:text-red-700 hover:bg-red-500/10"
+                          )}
+                        >
+                          Remove
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {/* Invite input */}
+                <div className="space-y-2">
+                  <Label className={cn("text-sm", uiMode === "dark" ? "text-white/90" : "text-black/90")}>
+                    Invite host
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="email"
+                      placeholder="email@example.com"
+                      value={inviteEmail}
+                      onChange={(e) => setInviteEmail(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !isInviting) {
+                          handleInviteHost()
+                        }
+                      }}
+                      className={cn(
+                        "flex-1",
+                        uiMode === "dark"
+                          ? "bg-white/5 border-white/20 text-white placeholder:text-white/40"
+                          : "bg-black/5 border-black/20 text-black placeholder:text-black/40"
+                      )}
+                      disabled={isInviting}
+                    />
+                    <Button
+                      onClick={handleInviteHost}
+                      disabled={isInviting || !inviteEmail.trim()}
+                      className="bg-gradient-to-r from-lime-500 to-emerald-500 hover:from-lime-400 hover:to-emerald-400 text-black font-medium"
+                    >
+                      {isInviting ? "Inviting..." : "Invite"}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </motion.div>
+        )}
       </div>
 
       {/* Unpublish Confirmation Dialog */}
@@ -882,8 +1402,9 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
             </Button>
             <Button
               onClick={handleUnpublish}
-              disabled={isUnpublishing}
-              className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20"
+              disabled={isUnpublishing || role !== "owner"}
+              className="flex-1 bg-red-600 hover:bg-red-700 text-white font-medium rounded-full h-12 shadow-lg shadow-red-500/20 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={role !== "owner" ? "Only the session owner can unpublish" : undefined}
             >
               {isUnpublishing ? "Removing..." : "Remove"}
             </Button>
@@ -1055,6 +1576,112 @@ export function HostSessionAnalytics({ sessionId, uiMode }: HostSessionAnalytics
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Attendance Reminder Dialog */}
+      {sessionData && currentPrompt?.type === "attendance_reminder" && analytics && (
+        <AttendanceReminderDialog
+          open={attendanceDialogOpen}
+          onOpenChange={setAttendanceDialogOpen}
+          promptId={currentPrompt.id}
+          session={sessionData}
+          participants={analytics.acceptedList.map(p => ({ display_name: p.display_name }))}
+          slotsRemaining={Math.max(0, (analytics.attendance.capacity || 0) - analytics.attendance.accepted)}
+          uiMode={uiMode}
+        />
+      )}
+
+      {/* Payment Summary Dialog */}
+      {sessionData && currentPrompt?.type === "payment_summary" && analytics && analytics.pricePerPerson && analytics.pricePerPerson > 0 && (
+        <PaymentSummaryDialog
+          open={paymentDialogOpen}
+          onOpenChange={setPaymentDialogOpen}
+          promptId={currentPrompt.id}
+          session={sessionData}
+          paidParticipants={analytics.acceptedList
+            .filter(p => paidParticipantIds.has(p.id))
+            .map(p => ({ display_name: p.display_name }))}
+          pendingParticipants={analytics.acceptedList
+            .filter(p => !paidParticipantIds.has(p.id))
+            .map(p => ({ display_name: p.display_name }))}
+          uiMode={uiMode}
+        />
+      )}
+
+      {/* Manual Reminders Dialog */}
+      <Dialog open={manualRemindersDialogOpen} onOpenChange={setManualRemindersDialogOpen}>
+        <DialogContent
+          className={cn(
+            "max-w-md",
+            uiMode === "dark"
+              ? "bg-slate-900 border-white/10 text-white"
+              : "bg-white border-black/10 text-black"
+          )}
+        >
+          <DialogHeader>
+            <DialogTitle className={cn("text-xl font-bold", uiMode === "dark" ? "text-white" : "text-black")}>
+              Open Reminders
+            </DialogTitle>
+            <DialogDescription className={cn(uiMode === "dark" ? "text-white/60" : "text-black/60")}>
+              Manually trigger a reminder dialog.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-2">
+            {availablePrompts.map((prompt) => {
+              const label = prompt.type === "attendance_reminder" ? "Attendance Reminder" : "Payment Summary"
+              const isDisabled = prompt.type === "payment_summary" && (!analytics?.pricePerPerson || analytics.pricePerPerson <= 0)
+              
+              return (
+                <Button
+                  key={prompt.id}
+                  onClick={async () => {
+                    const { resetPrompt } = await import("@/app/host/sessions/[id]/actions")
+                    await resetPrompt(prompt.id)
+                    setCurrentPrompt({ id: prompt.id, type: prompt.type })
+                    setManualRemindersDialogOpen(false)
+                    
+                    if (prompt.type === "attendance_reminder") {
+                      setAttendanceDialogOpen(true)
+                    } else if (prompt.type === "payment_summary") {
+                      setPaymentDialogOpen(true)
+                    }
+                  }}
+                  disabled={isDisabled}
+                  variant="outline"
+                  className={cn(
+                    "w-full justify-start",
+                    uiMode === "dark"
+                      ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                      : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
+                  )}
+                >
+                  {label}
+                  {(prompt.shownAt || prompt.dismissedAt) && (
+                    <span className={cn("ml-auto text-xs", uiMode === "dark" ? "text-white/50" : "text-black/50")}>
+                      (previously shown)
+                    </span>
+                  )}
+                </Button>
+              )
+            })}
+          </div>
+
+          <DialogFooter>
+            <Button
+              onClick={() => setManualRemindersDialogOpen(false)}
+              variant="outline"
+              className={cn(
+                "w-full",
+                uiMode === "dark"
+                  ? "border-white/20 bg-white/5 hover:bg-white/10 text-white"
+                  : "border-black/20 bg-black/5 hover:bg-black/10 text-black"
+              )}
+            >
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

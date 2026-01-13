@@ -23,12 +23,20 @@ async function HostSessionEditContent({
     redirect("/")
   }
 
-  // Fetch session with host verification
+  // Verify user has access to session via session_hosts
+  const { getSessionAccess } = await import("@/app/host/sessions/[id]/actions")
+  const access = await getSessionAccess(sessionId)
+  
+  if (!access.ok) {
+    console.error(`[HostSessionEditContent] Access denied:`, access.error)
+    notFound()
+  }
+
+  // Fetch session data
   const { data: session, error } = await supabase
     .from("sessions")
     .select("*")
     .eq("id", sessionId)
-    .eq("host_id", userId)
     .single()
 
   if (error || !session) {
