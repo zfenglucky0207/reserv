@@ -5,6 +5,82 @@ import { createClient, createAdminClient, getUserId } from "@/lib/supabase/serve
 import { redirect } from "next/navigation"
 import { generateShortCode } from "@/lib/utils/short-code"
 import { toSlug } from "@/lib/utils/slug"
+import { logInfo, logWarn, logError, withTrace, newTraceId } from "@/lib/logger"
+
+async function reconcileHostParticipantForSession({
+  supabase,
+  sessionId,
+  hostId,
+  hostNameFallback,
+  traceId,
+}: {
+  supabase: Awaited<ReturnType<typeof createClient>>
+  sessionId: string
+  hostId: string
+  hostNameFallback: string
+  traceId: string
+}) {
+  // Read intent (host_joins_session is source of truth; host_will_join kept for compatibility)
+  const { data: sessionRow, error: intentError } = await supabase
+    .from("sessions")
+    .select("host_joins_session, host_will_join, host_name")
+    .eq("id", sessionId)
+    .single()
+
+  if (intentError || !sessionRow) {
+    logWarn("host_participant_skipped", withTrace({ reason: "intent_read_failed", sessionId, error: intentError?.message }, traceId))
+    return
+  }
+
+  const hostJoinsSession =
+    (sessionRow as any).host_joins_session ??
+    (sessionRow as any).host_will_join ??
+    true
+
+  // Host materialization requires an authenticated host (for email + ownership),
+  // but uses service role for the actual write.
+  const { data: { user } } = await supabase.auth.getUser()
+  const userEmail = user?.email ?? null
+  const hostName = (sessionRow as any).host_name || hostNameFallback
+  const adminClient = createAdminClient()
+
+  if (hostJoinsSession) {
+    const payload = {
+      session_id: sessionId,
+      display_name: hostName,
+      contact_email: userEmail, // nullable
+      status: "confirmed",
+      profile_id: hostId, // host_id as profile_id for idempotency
+      is_host: true,
+    }
+
+    const { error: upsertError } = await adminClient
+      .from("participants")
+      .upsert(payload as any, { onConflict: "session_id,profile_id" })
+
+    if (upsertError) {
+      logError("host_participant_inserted_on_publish_failed", withTrace({ sessionId, error: upsertError.message, code: (upsertError as any)?.code }, traceId))
+      return
+    }
+
+    logInfo("host_participant_inserted_on_publish", withTrace({ sessionId }, traceId))
+    return
+  }
+
+  // host_joins_session === false → ensure host participant not present
+  const { error: deleteError } = await adminClient
+    .from("participants")
+    .delete()
+    .eq("session_id", sessionId)
+    .eq("profile_id", hostId)
+
+  if (deleteError) {
+    logWarn("host_participant_skipped", withTrace({ reason: "delete_failed", sessionId, error: deleteError.message }, traceId))
+    return
+  }
+
+  logInfo("host_participant_skipped", withTrace({ reason: "host_joins_session_false", sessionId }, traceId))
+}
 
 /**
  * Get host's live (published) sessions
@@ -368,7 +444,7 @@ export async function getSessionAnalytics(sessionId: string): Promise<
   // Get session with capacity and verify ownership
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, host_id, capacity, status, start_at, host_slug, public_code")
+    .select("id, host_id, capacity, status, start_at, host_slug, public_code, price")
     .eq("id", sessionId)
     .single()
 
@@ -485,11 +561,11 @@ export async function getSessionAnalytics(sessionId: string): Promise<
   // confirmedCount: all approved payments (includes approved uploads + cash payments)
   const confirmedCount = allPaymentProofs?.filter((p) => p.payment_status === "approved").length || 0
   
-  // Legacy fields (for backward compatibility)
-  const pricePerPerson = null // TODO: Get from sessions table if it has price field
+  // price (NULL = TBD, 0 = Free)
+  const pricePerPerson = (session as any).price ?? null
   const paidCount = confirmedCount // approved = paid
   const collected = approvedPaymentProofs?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0
-  const total = pricePerPerson ? pricePerPerson * accepted : 0
+  const total = typeof pricePerPerson === "number" ? pricePerPerson * accepted : 0
 
   return {
     ok: true,
@@ -549,8 +625,10 @@ export async function publishSession(
     endAt: string | null
     location: string | null
     capacity: number | null
+    price: number | null
     hostName: string
     sport: "badminton" | "pickleball" | "volleyball" | "other"
+    hostJoinsSession: boolean
     description?: string | null
     coverUrl?: string | null
     courtNumbers?: string | null
@@ -561,10 +639,18 @@ export async function publishSession(
 ): Promise<{ ok: true; publicCode: string; hostSlug: string; sessionId: string } | { ok: false; error: string }> {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
+  const traceId = newTraceId("publish")
 
   if (!userId) {
     return { ok: false, error: "Unauthorized" }
   }
+
+  // Host avatar URL from auth provider (e.g., Google). Used for public invite avatars.
+  const { data: { user } } = await supabase.auth.getUser()
+  const hostAvatarUrl =
+    (user as any)?.user_metadata?.avatar_url ||
+    (user as any)?.user_metadata?.picture ||
+    null
 
   // Ensure user exists in public.users table (required for foreign key constraint)
   // Try to insert user, ignore if already exists (unique constraint violation)
@@ -611,8 +697,12 @@ export async function publishSession(
         end_at: sessionData.endAt,
         location: sessionData.location,
         capacity: sessionData.capacity,
+        price: sessionData.price ?? null,
         host_name: sessionData.hostName,
+        host_avatar_url: hostAvatarUrl,
         sport: sessionData.sport,
+        host_joins_session: sessionData.hostJoinsSession,
+        host_will_join: sessionData.hostJoinsSession, // keep legacy column in sync (optional)
         description: sessionData.description || null,
         cover_url: sessionData.coverUrl || null,
         court_numbers: sessionData.courtNumbers || null,
@@ -640,14 +730,32 @@ export async function publishSession(
   // Also update host_slug if it changed (idempotent but can update slug)
   if (session.public_code && session.status === "open") {
     const hostSlug = session.host_slug || toSlug(sessionData.hostName || "host")
+    // Reconcile host participant even on idempotent re-publish (sessions created before this logic
+    // may be missing the host participant row).
+    try {
+      await reconcileHostParticipantForSession({
+        supabase,
+        sessionId: actualSessionId,
+        hostId: userId,
+        hostNameFallback: sessionData.hostName,
+        traceId,
+      })
+    } catch {}
     // Update host_slug if it's missing or if hostName changed (optional optimization)
     if (!session.host_slug || session.host_slug !== toSlug(sessionData.hostName || "host")) {
       const newHostSlug = toSlug(sessionData.hostName || "host")
       await supabase
         .from("sessions")
-        .update({ host_slug: newHostSlug })
+        .update({ host_slug: newHostSlug, host_avatar_url: hostAvatarUrl })
         .eq("id", actualSessionId)
       return { ok: true, publicCode: session.public_code, hostSlug: newHostSlug, sessionId: actualSessionId }
+    }
+    // Keep avatar URL fresh even if slug doesn't change
+    if (hostAvatarUrl) {
+      await supabase
+        .from("sessions")
+        .update({ host_avatar_url: hostAvatarUrl })
+        .eq("id", actualSessionId)
     }
     return { ok: true, publicCode: session.public_code, hostSlug, sessionId: actualSessionId }
   }
@@ -715,14 +823,20 @@ export async function publishSession(
     return { ok: false, error: "Failed to generate public code" }
   }
 
-  // Get host_will_join before updating (to check if host should be added as participant)
+  // Read host_joins_session intent (source of truth is the session row, but we also
+  // set it from the publish payload to support pre-publish toggling when no session existed).
   const { data: sessionBeforeUpdate } = await supabase
     .from("sessions")
-    .select("host_will_join, host_name")
+    .select("host_joins_session, host_will_join, host_name")
     .eq("id", actualSessionId)
     .single()
 
-  const hostWillJoin = sessionBeforeUpdate?.host_will_join ?? false
+  // Backward compatibility: some environments may still be looking at host_will_join.
+  const hostJoinsSession =
+    (sessionBeforeUpdate as any)?.host_joins_session ??
+    (sessionBeforeUpdate as any)?.host_will_join ??
+    sessionData.hostJoinsSession ??
+    true
 
   // Update session with public_code, host_slug, and status = 'open'
   const { error: updateError } = await supabase
@@ -731,6 +845,10 @@ export async function publishSession(
       public_code: publicCode,
       host_slug: hostSlug,
       status: "open",
+      host_joins_session: sessionData.hostJoinsSession,
+      host_will_join: sessionData.hostJoinsSession, // keep legacy column in sync (optional)
+      price: sessionData.price ?? null,
+      host_avatar_url: hostAvatarUrl,
       court_numbers: sessionData.courtNumbers || null,
       container_overlay_enabled: sessionData.containerOverlayEnabled ?? true,
       map_url: sessionData.mapUrl || null,
@@ -743,43 +861,17 @@ export async function publishSession(
     return { ok: false, error: updateError.message || "Failed to publish session" }
   }
 
-  // If host_will_join === true, insert host as participant (only on publish)
-  if (hostWillJoin) {
-    const adminClient = createAdminClient()
-    
-    // Get user email
-    const { data: { user } } = await supabase.auth.getUser()
-    const userEmail = user?.email || null
-    const hostName = sessionBeforeUpdate?.host_name || sessionData.hostName
-
-    if (userEmail) {
-      // Check if host is already a participant (idempotent)
-      const { data: existingParticipant } = await adminClient
-        .from("participants")
-        .select("id")
-        .eq("session_id", actualSessionId)
-        .eq("contact_email", userEmail)
-        .maybeSingle()
-
-      if (!existingParticipant) {
-        // Insert host as participant
-        const { error: insertError } = await adminClient
-          .from("participants")
-          .insert({
-            session_id: actualSessionId,
-            display_name: hostName,
-            contact_email: userEmail,
-            status: "confirmed",
-            profile_id: userId, // Use user ID as profile_id for hosts
-          })
-
-        if (insertError) {
-          // Log error but don't fail publish - host can be added manually later
-          console.error("[publishSession] Failed to add host as participant:", insertError)
-        }
-      }
-    }
-  }
+  // Materialize host participant ONLY on publish/update, based on host_joins_session intent.
+  // Guests should only ever see the host if there is a participants row.
+  try {
+    await reconcileHostParticipantForSession({
+      supabase,
+      sessionId: actualSessionId,
+      hostId: userId,
+      hostNameFallback: sessionData.hostName,
+      traceId,
+    })
+  } catch {}
 
   // Revalidate paths
   revalidatePath(`/host/sessions/${actualSessionId}/edit`)
@@ -799,6 +891,7 @@ export async function updateLiveSession(
     endAt: string | null
     location: string | null
     capacity: number | null
+    price: number | null
     hostName: string
     sport: "badminton" | "pickleball" | "volleyball" | "other"
     description?: string | null
@@ -811,10 +904,18 @@ export async function updateLiveSession(
 ): Promise<{ ok: true; publicCode: string; hostSlug: string } | { ok: false; error: string }> {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
+  const traceId = newTraceId("update_live")
 
   if (!userId) {
     return { ok: false, error: "Unauthorized" }
   }
+
+  // Host avatar URL from auth provider (e.g., Google). Used for public invite avatars.
+  const { data: { user } } = await supabase.auth.getUser()
+  const hostAvatarUrl =
+    (user as any)?.user_metadata?.avatar_url ||
+    (user as any)?.user_metadata?.picture ||
+    null
 
   // Verify session belongs to user and is live
   const { data: session, error: fetchError } = await supabase
@@ -847,8 +948,10 @@ export async function updateLiveSession(
       end_at: sessionData.endAt,
       location: sessionData.location,
       capacity: sessionData.capacity,
+      price: sessionData.price ?? null,
       host_name: sessionData.hostName,
       host_slug: hostSlug,
+      host_avatar_url: hostAvatarUrl,
       sport: sessionData.sport,
       description: sessionData.description || null,
       cover_url: sessionData.coverUrl || null,
@@ -871,6 +974,17 @@ export async function updateLiveSession(
   if (session.public_code && hostSlug) {
     revalidatePath(`/${hostSlug}/${session.public_code}`)
   }
+
+  // Reconcile host participant on "Update" too (for sessions created before host_joins_session was enforced).
+  try {
+    await reconcileHostParticipantForSession({
+      supabase,
+      sessionId,
+      hostId: userId,
+      hostNameFallback: sessionData.hostName,
+      traceId,
+    })
+  } catch {}
 
   return { ok: true, publicCode: session.public_code!, hostSlug }
 }
@@ -1013,7 +1127,7 @@ export async function getSessionDataForDraft(
     eventDate: session.start_at || "",
     eventLocation: session.location || "",
     eventMapUrl: (session as any).map_url || "", // Load from database
-    eventPrice: 0, // Not stored in sessions (would need to fetch from payment_proofs or add price column)
+    eventPrice: (session as any).price ?? null, // NULL = TBD, 0 = Free
     eventCapacity: session.capacity || 0,
     hostName: session.host_name || null,
     eventDescription: session.description || "",
@@ -1042,6 +1156,7 @@ export async function updateDraftSession(
     start_at?: string
     end_at?: string | null
     capacity?: number | null
+    price?: number | null
     host_name?: string | null
   }
 ): Promise<{ ok: true } | { ok: false; error: string }> {

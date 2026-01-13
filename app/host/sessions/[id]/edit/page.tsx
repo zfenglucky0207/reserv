@@ -19,7 +19,8 @@ async function HostSessionEditContent({
   const userId = await getUserId(supabase)
 
   if (!userId) {
-    redirect("/auth/login")
+    // If the user signs out while on this page, default them back to home.
+    redirect("/")
   }
 
   // Fetch session with host verification
@@ -55,7 +56,7 @@ async function HostSessionEditContent({
       initialTitle={session.title || null}
       initialDate={null} // TODO: Format from session.start_at if needed
       initialLocation={session.location || null}
-      initialPrice={(session as any).price || null} // Type assertion since price might exist but not in types
+      initialPrice={(session as any).price ?? null} // Preserve 0 (Free). null = TBD.
       initialCapacity={session.capacity || null}
       initialCourt={(session as any).court_numbers || null} // Type assertion until types are regenerated
       initialContainerOverlayEnabled={(session as any).container_overlay_enabled ?? true} // Type assertion until types are regenerated

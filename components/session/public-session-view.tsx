@@ -34,6 +34,7 @@ interface Participant {
   display_name: string
   user_id?: string | null // Will be added via migration
   status?: "invited" | "confirmed" | "cancelled" | "waitlisted" // Participant status
+  is_host?: boolean
 }
 
 interface Session {
@@ -54,6 +55,7 @@ interface Session {
   status?: "draft" | "open" | "closed" | "completed" | "cancelled" // Session status
   map_url?: string | null // Google Maps URL
   payment_qr_image?: string | null // Payment QR code image
+  host_avatar_url?: string | null // Host profile image (public invite)
   // Add price if it exists in the schema
   // price?: number | null
 }
@@ -691,11 +693,12 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
   // Use useMemo to ensure it updates immediately when participants state changes
   const demoParticipants = useMemo(() => {
     const confirmed = participants.filter((p: any) => p.status === "confirmed" || !p.status)
+    const hostAvatarUrl = (session as any)?.host_avatar_url || null
     return confirmed.map((p) => ({
     name: p.display_name,
-    avatar: null,
+    avatar: (p as any).is_host ? hostAvatarUrl : null,
   }))
-  }, [participants])
+  }, [participants, session])
 
   // Sync UI mode from SessionInvite if needed (it manages its own state)
   // We'll keep this component's state for the dialog styling
@@ -843,6 +846,10 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
       
       // Clear duplicate name error on success
       setDuplicateNameError(null)
+
+      // Close the RSVP dialog on success (including idempotent "alreadyJoined" success)
+      // Keep it open only for duplicate-name validation errors handled above.
+      setRsvpDialogOpen(false)
 
       // Success
       logInfo("join_success_client", { 
@@ -1265,6 +1272,7 @@ function PublicSessionViewContent({ session, participants: initialParticipants, 
         initialCourt={session.court_numbers || null}
         initialContainerOverlayEnabled={session.container_overlay_enabled ?? true}
         initialHostName={session.host_name || null}
+        initialHostAvatarUrl={(session as any).host_avatar_url || null}
         initialDescription={session.description || null}
         initialMapUrl={session.map_url || null}
         initialPaymentQrImage={session.payment_qr_image || null}

@@ -67,7 +67,7 @@ interface SessionInviteHeroProps {
   onDateModalOpen: () => void
   onLocationModalOpen: () => void
   onCourtModalOpen: () => void
-  onPriceChange: (value: number) => void
+  onPriceChange: (value: number | null) => void
   onPriceBlur?: () => void
   onPriceFocus?: () => void
   onCapacityChange: (value: number) => void
@@ -92,6 +92,7 @@ interface SessionInviteHeroProps {
   
   // User profile
   getUserProfileName: () => string | null
+  hostAvatarUrl?: string | null
   
   // Session info
   sessionId?: string
@@ -157,6 +158,7 @@ export function SessionInviteHero({
   inputPlaceholder,
   errorRing,
   getUserProfileName,
+  hostAvatarUrl,
   sessionId,
   router,
 }: SessionInviteHeroProps) {
@@ -416,7 +418,7 @@ export function SessionInviteHero({
                           "text-4xl font-bold text-white",
                           isPreviewMode ? "text-left" : "text-center",
                           TITLE_FONTS[titleFont],
-                          !eventTitle && "italic opacity-60",
+                          !eventTitle && "opacity-60",
                           (!isEditMode || isPreviewMode) && HERO_TITLE_SHADOW
                         )}
                       >
@@ -442,7 +444,7 @@ export function SessionInviteHero({
                               <Calendar className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                               <div className="flex-1">
                                 <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Date & Time</p>
-                                <p className={`${eventDate ? strongText : mutedText} ${!eventDate ? "italic" : ""} font-medium`}>{eventDate || "Choose date"}</p>
+                                <p className={`${eventDate ? strongText : mutedText} font-medium`}>{eventDate || "Choose date"}</p>
                               </div>
                               <ChevronRight className={`w-5 h-5 ${uiMode === "dark" ? "text-white/40" : "text-black/40"} flex-shrink-0`} />
                             </motion.button>
@@ -463,7 +465,7 @@ export function SessionInviteHero({
                               <MapPin className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                               <div className="flex-1">
                                 <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Location</p>
-                                <p className={`${eventLocation ? strongText : mutedText} ${!eventLocation ? "italic" : ""} font-medium`}>{eventLocation || "Enter location"}</p>
+                                <p className={`${eventLocation ? strongText : mutedText} font-medium`}>{eventLocation || "Enter location"}</p>
                               </div>
                               <ChevronRight className={`w-5 h-5 ${uiMode === "dark" ? "text-white/40" : "text-black/40"} flex-shrink-0`} />
                             </motion.button>
@@ -480,7 +482,7 @@ export function SessionInviteHero({
                             <Grid3x3 className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
                               <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Courts booked</p>
-                              <p className={`${eventCourt ? strongText : mutedText} ${!eventCourt ? "italic" : ""} font-medium`}>
+                              <p className={`${eventCourt ? strongText : mutedText} font-medium`}>
                                 {eventCourt ? formatCourtDisplay(eventCourt) : "Enter court numbers (optional)"}
                               </p>
                             </div>
@@ -500,20 +502,55 @@ export function SessionInviteHero({
                             <DollarSign className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
                               <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Cost per person</p>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-2 flex-wrap">
                                 <span className={`${strongText} font-medium`}>$</span>
                                 <input
                                   type="number"
-                                  value={eventPrice || ""}
-                                  onChange={(e) => onPriceChange(Number(e.target.value) || 0)}
+                                  value={eventPrice ?? ""}
+                                  onChange={(e) => {
+                                    const raw = e.target.value
+                                    if (raw === "") {
+                                      // Parent state uses NULL for TBD
+                                      onPriceChange(null)
+                                      return
+                                    }
+                                    const n = Number(raw)
+                                    onPriceChange(Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0)
+                                  }}
                                   onBlur={onPriceBlur}
                                   onFocus={onPriceFocus}
                                   min={0}
                                   step={1}
-                                  placeholder="Cost"
-                                  className={`bg-transparent border-none ${strongText} font-medium italic w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
+                                  placeholder={eventPrice === null ? "TBD" : "Cost"}
+                                  className={`bg-transparent border-none ${strongText} font-medium w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
                                 />
                                 <span className={`${strongText} font-medium`}>per person</span>
+                                <div className="flex items-center gap-2 ml-auto">
+                                  <button
+                                    type="button"
+                                    onClick={() => onPriceChange(0)}
+                                    className={cn(
+                                      "text-xs px-2 py-1 rounded-md border transition-colors",
+                                      uiMode === "dark"
+                                        ? "bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
+                                        : "bg-black/5 border-black/10 text-black/70 hover:bg-black/10"
+                                    )}
+                                  >
+                                    Free
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onPriceChange(null)}
+                                    className={cn(
+                                      "text-xs px-2 py-1 rounded-md border transition-colors",
+                                      uiMode === "dark"
+                                        ? "bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
+                                        : "bg-black/5 border-black/10 text-black/70 hover:bg-black/10"
+                                    )}
+                                  >
+                                    TBD
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           </motion.div>
@@ -541,9 +578,9 @@ export function SessionInviteHero({
                                   min={1}
                                   step={1}
                                   placeholder="Number"
-                                  className={`bg-transparent border-none ${strongText} font-medium w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder} [&::placeholder]:italic`}
+                                  className={`bg-transparent border-none ${strongText} font-medium w-24 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
                                 />
-                                <span className={`${strongText} font-medium`}>spots available</span>
+                                <span className={`${strongText} font-medium ml-3 whitespace-nowrap`}>spots available</span>
                               </div>
                             </div>
                           </motion.div>
@@ -554,13 +591,13 @@ export function SessionInviteHero({
                       <div className="space-y-4">
                         <div className="flex items-start gap-3">
                           <Calendar className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-base text-white", !eventDate && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("text-base text-white", !eventDate && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {eventDate || "Choose date"}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
                           <MapPin className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-sm sm:text-base text-white break-words min-w-0", !eventLocation && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("text-sm sm:text-base text-white break-words min-w-0", !eventLocation && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {eventLocation || "Enter location"}
                           </p>
                         </div>
@@ -575,16 +612,18 @@ export function SessionInviteHero({
                         )}
                         <div className="flex items-start gap-3">
                           <DollarSign className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-base text-white", (!eventPrice || eventPrice === 0) && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
-                            {eventPrice && eventPrice > 0 
-                              ? `$${eventPrice} ${demoMode ? "per chick" : "per person"}` 
-                              : "Enter cost"}
+                          <p className={cn("text-base text-white", eventPrice === null && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                            {eventPrice === null
+                              ? "TBD"
+                              : eventPrice === 0
+                                ? "Free"
+                                : `$${eventPrice} ${demoMode ? "per chick" : "per person"}`}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
                           <Users className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
                           <div className="flex items-center gap-2 flex-wrap">
-                            <p className={cn("text-base text-white", (!eventCapacity || eventCapacity === 0) && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                            <p className={cn("text-base text-white", (!eventCapacity || eventCapacity === 0) && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                               {eventCapacity && eventCapacity > 0 ? `${eventCapacity} spots total` : "Enter number of spots"}
                             </p>
                             {/* FULL badge when session is at capacity (public view only) */}
@@ -609,7 +648,19 @@ export function SessionInviteHero({
                       fieldErrors.host && "ring-2 ring-red-500/70 rounded-lg p-2 -m-2"
                     )}
                   >
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] flex-shrink-0" />
+                    {(() => {
+                      const avatarUrl = hostAvatarUrl || null
+                      const initial = (displayHostName?.trim()?.[0] ?? "H").toUpperCase()
+                      return (
+                        <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)]">
+                          {avatarUrl ? (
+                            <img src={avatarUrl} alt="Host avatar" className="w-full h-full object-cover" />
+                          ) : (
+                            <span className="text-white font-semibold">{initial}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                     <div className="min-w-0 flex-1">
                       <p className={cn("text-xs text-white/70 uppercase tracking-wide", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>Hosted by</p>
                       {isEditMode && !isPreviewMode ? (
@@ -632,7 +683,7 @@ export function SessionInviteHero({
                             disabled={isHostNameSaving}
                             maxLength={40}
                             className={cn(
-                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1 placeholder:italic",
+                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1",
                               fieldErrors.host ? "border-red-500/70 focus:border-red-500/70" : "focus:border-white/30"
                             )}
                             placeholder={getUserProfileName() ?? "Your name"}
@@ -656,7 +707,7 @@ export function SessionInviteHero({
                           </button>
                         </div>
                       ) : (
-                        <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                        <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                           {displayHostName || "Your name"}
                         </p>
                       )}

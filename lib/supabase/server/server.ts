@@ -136,7 +136,7 @@ export async function getUserId(supabase: SupabaseClient) {
   const user = await getUser(supabase);
 
   if (!user) {
-    console.error("No session found");
+    // Unauthenticated users are expected on public routes or immediately after sign-out.
     return null;
   }
 

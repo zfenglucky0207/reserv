@@ -384,6 +384,7 @@ export function SaveDraftGuardModal({ sessionId, uiMode, sessionStatus, onDraftS
         onOpenChange={setShowDraftNameDialog}
         onSave={handleDraftNameConfirm}
         uiMode={uiMode}
+        initialName={draftData?.eventTitle || ""}
       />
     </>
   )

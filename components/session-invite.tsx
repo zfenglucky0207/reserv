@@ -6,6 +6,7 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo } from "react"
 import { motion, AnimatePresence, LayoutGroup, useMotionValue, useTransform, animate } from "framer-motion"
 import { useRouter, usePathname, useSearchParams } from "next/navigation"
 import { useAuth } from "@/lib/hooks/use-auth"
+import { getAuthAvatarUrl, getInitialLetter } from "@/lib/avatar"
 import { TopNav } from "./top-nav"
 import { LoginDialog } from "./login-dialog"
 import { getCurrentReturnTo, setPostAuthRedirect } from "@/lib/post-auth-redirect"
@@ -82,6 +83,7 @@ interface SessionInviteProps {
   initialCapacity?: number | null
   initialCourt?: string | null
   initialHostName?: string | null
+  initialHostAvatarUrl?: string | null
   initialDescription?: string | null
   initialMapUrl?: string | null
   initialPaymentQrImage?: string | null
@@ -119,6 +121,7 @@ export function SessionInvite({
   initialCapacity = null,
   initialCourt = null,
   initialHostName = null,
+  initialHostAvatarUrl = null,
   initialDescription = null,
   initialMapUrl = null,
   initialPaymentQrImage = null,
@@ -440,7 +443,11 @@ export function SessionInvite({
   const [locationDraft, setLocationDraft] = useState<string>(initialLocation || "")
   const [mapUrlDraft, setMapUrlDraft] = useState<string>("")
   const [courtDraft, setCourtDraft] = useState<string>(initialCourt || "")
-  const [eventPrice, setEventPrice] = useState(initialPrice ?? (isEmptySession ? 0 : 15))
+  // price: NULL = TBD, 0 = Free, >0 = dollars per person
+  const defaultPrice = isEmptySession ? 0 : 15
+  const [eventPrice, setEventPrice] = useState<number | null>(
+    initialIsPublished ? (initialPrice ?? null) : (initialPrice ?? defaultPrice)
+  )
   const [eventCapacity, setEventCapacity] = useState(initialCapacity ?? (isEmptySession ? 0 : 8))
   const [eventCourt, setEventCourt] = useState(initialCourt || "")
   const [containerOverlayEnabled, setContainerOverlayEnabled] = useState(initialContainerOverlayEnabled ?? true)
@@ -486,7 +493,7 @@ export function SessionInvite({
   const [hostNameInput, setHostNameInput] = useState(initialHostName || "")
   const [isHostNameEditing, setIsHostNameEditing] = useState(false)
   const [isHostNameSaving, setIsHostNameSaving] = useState(false)
-  const [hostWillJoin, setHostWillJoin] = useState(false) // Default to false (intent only, not action)
+  const [hostWillJoin, setHostWillJoin] = useState(true) // Default to true (intent only, materialized only on publish)
   // Initialize sport from prop or default to "Badminton"
   // Normalize to capitalized form for UI consistency
   const getSportDisplayName = (sport: string | null | undefined): string => {
@@ -1578,6 +1585,12 @@ export function SessionInvite({
     })
   }
 
+  const getPriceDisplayText = () => {
+    if (eventPrice === null) return "TBD"
+    if (eventPrice === 0) return "Free"
+    return `$${eventPrice} ${demoMode ? "per chick" : "per person"}`
+  }
+
   // Get user's profile name (fallback to email prefix)
   const getUserProfileName = () => {
     if (!authUser) return null
@@ -1605,8 +1618,9 @@ export function SessionInvite({
   const isLocationValid = () =>
     !isBlank(eventLocation) && !isPlaceholder(eventLocation, PLACEHOLDERS.location)
 
+  // Price is optional: NULL = TBD is allowed, 0 = Free is allowed
   const isPriceValid = () =>
-    typeof eventPrice === "number" && !Number.isNaN(eventPrice) && eventPrice >= 0
+    eventPrice === null || (typeof eventPrice === "number" && !Number.isNaN(eventPrice) && eventPrice >= 0)
 
   const isCapacityValid = () =>
     Number.isInteger(eventCapacity) && eventCapacity >= 1
@@ -1931,6 +1945,7 @@ export function SessionInvite({
         endAt,
         location: eventLocation || null,
         capacity: eventCapacity || null,
+        price: eventPrice,
         hostName: hostNameForPublish,
         sport: sportEnum,
         description: eventDescription || null,
@@ -1986,6 +2001,7 @@ export function SessionInvite({
         result = await publishSession({
           sessionId: publishSessionId || null, // Pass null if "new" or doesn't exist
           ...sessionData,
+          hostJoinsSession: hostWillJoin,
         })
 
         if (!result.ok) {
@@ -2124,6 +2140,7 @@ export function SessionInvite({
       start_at: startAt,
       end_at: endAt,
       capacity: eventCapacity || null,
+      price: eventPrice,
       host_name: hostNameForUpdate,
     }
   }
@@ -2185,6 +2202,16 @@ export function SessionInvite({
       if (result.ok) {
         setDrafts(result.drafts)
       } else {
+        // If not authenticated, prompt login instead of logging a scary error
+        if (result.error === "Unauthorized") {
+          if (typeof window !== "undefined") {
+            const returnTo = getCurrentReturnTo()
+            setPostAuthRedirect(returnTo)
+          }
+          setLoginDialogOpen(true)
+          return
+        }
+
         console.error("Failed to load drafts:", result.error)
       }
     } catch (error) {
@@ -2455,6 +2482,15 @@ export function SessionInvite({
 
   // Handle drafts dialog open
   const handleDraftsOpen = async () => {
+    if (!isAuthenticated) {
+      if (typeof window !== "undefined") {
+        const returnTo = getCurrentReturnTo()
+        setPostAuthRedirect(returnTo)
+      }
+      setLoginDialogOpen(true)
+      return
+    }
+
     await refreshDrafts()
     setIsOverwriteMode(false)
     setDraftsOpen(true)
@@ -2918,7 +2954,7 @@ export function SessionInvite({
                           "text-4xl font-bold text-white",
                           isPreviewMode ? "text-left" : "text-center",
                           TITLE_FONTS[titleFont],
-                          !eventTitle && "italic opacity-60",
+                          !eventTitle && "opacity-60",
                           (!isEditMode || isPreviewMode) && HERO_TITLE_SHADOW
                         )}
                       >
@@ -2947,7 +2983,7 @@ export function SessionInvite({
                               <Calendar className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                               <div className="flex-1">
                                 <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Date & Time</p>
-                                <p className={`${eventDate ? strongText : mutedText} ${!eventDate ? "italic" : ""} font-medium`}>{eventDate || "Choose date"}</p>
+                                <p className={`${eventDate ? strongText : mutedText} font-medium`}>{eventDate || "Choose date"}</p>
                               </div>
                               <ChevronRight className={`w-5 h-5 ${uiMode === "dark" ? "text-white/40" : "text-black/40"} flex-shrink-0`} />
                             </motion.button>
@@ -2971,7 +3007,7 @@ export function SessionInvite({
                             <MapPin className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
                               <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Location</p>
-                              <p className={`${eventLocation ? strongText : mutedText} ${!eventLocation ? "italic" : ""} font-medium`}>{eventLocation || "Enter location"}</p>
+                              <p className={`${eventLocation ? strongText : mutedText} font-medium`}>{eventLocation || "Enter location"}</p>
                             </div>
                             <ChevronRight className={`w-5 h-5 ${uiMode === "dark" ? "text-white/40" : "text-black/40"} flex-shrink-0`} />
                             </motion.button>
@@ -2988,7 +3024,7 @@ export function SessionInvite({
                             <Grid3x3 className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
                               <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Courts booked</p>
-                              <p className={`${eventCourt ? strongText : mutedText} ${!eventCourt ? "italic" : ""} font-medium`}>
+                              <p className={`${eventCourt ? strongText : mutedText} font-medium`}>
                                 {eventCourt ? formatCourtDisplay(eventCourt) : "Enter court numbers (optional)"}
                               </p>
                             </div>
@@ -3008,20 +3044,54 @@ export function SessionInvite({
                             <DollarSign className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
                               <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Cost per person</p>
-                              <div className="flex items-center gap-1.5">
+                              <div className="flex items-center gap-0 flex-wrap">
                                 <span className={`${strongText} font-medium`}>$</span>
                                 <input
                                   type="number"
-                                  value={eventPrice || ""}
-                                  onChange={(e) => setEventPrice(Number(e.target.value) || 0)}
+                                  value={eventPrice ?? ""}
+                                  onChange={(e) => {
+                                    const raw = e.target.value
+                                    if (raw === "") {
+                                      setEventPrice(null) // TBD
+                                      return
+                                    }
+                                    const n = Number(raw)
+                                    setEventPrice(Number.isFinite(n) ? Math.max(0, Math.trunc(n)) : 0)
+                                  }}
                                   onBlur={handleCostBlur}
                                   onFocus={() => setFieldErrors(prev => ({ ...prev, price: false }))}
                                   min={0}
                                   step={1}
-                                  placeholder="Cost"
-                                  className={`bg-transparent border-none ${strongText} font-medium italic w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
+                                  placeholder={eventPrice === null ? "TBD" : "Cost"}
+                                  className={`bg-transparent border-none ${strongText} font-medium w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
                                 />
                                 <span className={`${strongText} font-medium`}>per person</span>
+                                <div className="flex items-center gap-2 ml-auto">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEventPrice(0)}
+                                    className={cn(
+                                      "text-xs px-2 py-1 rounded-md border transition-colors",
+                                      uiMode === "dark"
+                                        ? "bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
+                                        : "bg-black/5 border-black/10 text-black/70 hover:bg-black/10"
+                                    )}
+                                  >
+                                    Free
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEventPrice(null)}
+                                    className={cn(
+                                      "text-xs px-2 py-1 rounded-md border transition-colors",
+                                      uiMode === "dark"
+                                        ? "bg-white/5 border-white/15 text-white/80 hover:bg-white/10"
+                                        : "bg-black/5 border-black/10 text-black/70 hover:bg-black/10"
+                                    )}
+                                  >
+                                    TBD
+                                  </button>
+                                </div>
                               </div>
                             </div>
                           </motion.div>
@@ -3038,21 +3108,21 @@ export function SessionInvite({
                           >
                             <Users className="w-5 h-5 text-[var(--theme-accent-light)] flex-shrink-0" />
                             <div className="flex-1">
-                              <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Spots</p>
-                              <div className="flex items-center gap-1.5">
-                                <input
-                                  type="number"
-                                  value={eventCapacity || ""}
-                                  onChange={(e) => setEventCapacity(Number(e.target.value) || 0)}
-                                  onBlur={handleSpotsBlur}
-                                  onFocus={() => setFieldErrors(prev => ({ ...prev, capacity: false }))}
-                                  min={1}
-                                  step={1}
-                                  placeholder="Number"
-                                  className={`bg-transparent border-none ${strongText} font-medium w-16 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder} [&::placeholder]:italic`}
-                                />
-                                <span className={`${strongText} font-medium`}>spots available</span>
-                              </div>
+                                <p className={`text-xs ${mutedText} uppercase tracking-wide mb-0.5`}>Spots</p>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="number"
+                                    value={eventCapacity || ""}
+                                    onChange={(e) => setEventCapacity(Number(e.target.value) || 0)}
+                                    onBlur={handleSpotsBlur}
+                                    onFocus={() => setFieldErrors(prev => ({ ...prev, capacity: false }))}
+                                    min={1}
+                                    step={1}
+                                    placeholder="Number"
+                                    className={`bg-transparent border-none ${strongText} font-medium w-24 focus:outline-none focus:ring-0 p-0 ${inputPlaceholder}`}
+                                  />
+                                  <span className={`${strongText} font-medium whitespace-nowrap`}>spots available</span>
+                                </div>
                             </div>
                           </motion.div>
                         </div>
@@ -3062,13 +3132,13 @@ export function SessionInvite({
                       <div className="space-y-4">
                         <div className="flex items-start gap-3">
                           <Calendar className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-base text-white", !eventDate && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("text-base text-white", !eventDate && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {eventDate || "Choose date"}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
                           <MapPin className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-sm sm:text-base text-white break-words min-w-0", !eventLocation && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("text-sm sm:text-base text-white break-words min-w-0", !eventLocation && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {eventLocation || "Enter location"}
                           </p>
                         </div>
@@ -3083,16 +3153,14 @@ export function SessionInvite({
                         )}
                         <div className="flex items-start gap-3">
                           <DollarSign className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
-                          <p className={cn("text-base text-white", (!eventPrice || eventPrice === 0) && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
-                            {eventPrice && eventPrice > 0 
-                              ? `$${eventPrice} ${demoMode ? "per chick" : "per person"}` 
-                              : "Enter cost"}
+                          <p className={cn("text-base text-white", eventPrice === null && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                            {getPriceDisplayText()}
                           </p>
                         </div>
                         <div className="flex items-start gap-3">
                           <Users className={cn("w-5 h-5 text-white/60 mt-0.5", (!isEditMode || isPreviewMode) && HERO_ICON_SHADOW)} />
                           <div className="flex items-center gap-2 flex-wrap">
-                          <p className={cn("text-base text-white", (!eventCapacity || eventCapacity === 0) && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("text-base text-white", (!eventCapacity || eventCapacity === 0) && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {eventCapacity && eventCapacity > 0 ? `${eventCapacity} spots total` : "Enter number of spots"}
                           </p>
                             {/* FULL badge when session is at capacity (public view only) */}
@@ -3117,7 +3185,25 @@ export function SessionInvite({
                         fieldErrors.host && "ring-2 ring-red-500/70 rounded-lg p-2 -m-2"
                       )}
                     >
-                    <div className="w-10 h-10 rounded-full bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)] flex-shrink-0" />
+                    {(() => {
+                      // Prefer persisted host avatar URL (available after publish, works for guests),
+                      // fallback to the current authed user's avatar (edit/preview), then initials.
+                      const avatarUrl = initialHostAvatarUrl || getAuthAvatarUrl(authUser)
+                      const initial = getInitialLetter(displayHostName)
+                      return (
+                        <div className="w-10 h-10 rounded-full overflow-hidden flex-shrink-0 flex items-center justify-center bg-gradient-to-br from-[var(--theme-accent-light)] to-[var(--theme-accent-dark)]">
+                          {avatarUrl ? (
+                            <img
+                              src={avatarUrl}
+                              alt="Host avatar"
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span className="text-white font-semibold">{initial}</span>
+                          )}
+                        </div>
+                      )
+                    })()}
                     <div className="min-w-0 flex-1">
                         <p className={cn("text-xs text-white/70 uppercase tracking-wide", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>Hosted by</p>
                       {isEditMode && !isPreviewMode ? (
@@ -3140,7 +3226,7 @@ export function SessionInvite({
                             disabled={isHostNameSaving}
                             maxLength={40}
                             className={cn(
-                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1 placeholder:italic",
+                              "bg-transparent border-none border-b border-transparent text-white font-medium focus:outline-none focus:ring-0 focus:border-b p-0 transition-colors disabled:opacity-50 flex-1",
                               fieldErrors.host ? "border-red-500/70 focus:border-red-500/70" : "focus:border-white/30"
                             )}
                             placeholder={getUserProfileName() ?? "Your name"}
@@ -3151,26 +3237,11 @@ export function SessionInvite({
                               e.preventDefault()
                               e.stopPropagation()
                               
-                              // Get session ID from pathname (same logic as saveHostName)
-                              let sessionIdToUse: string | undefined = actualSessionId
-                              
-                              if (!sessionIdToUse && pathname.includes("/host/sessions/")) {
-                                // Extract ID from /host/sessions/[id]/edit
-                                const parts = pathname.split("/")
-                                const sessionsIndex = parts.indexOf("sessions")
-                                if (sessionsIndex >= 0 && parts[sessionsIndex + 1]) {
-                                  sessionIdToUse = parts[sessionsIndex + 1]
-                                }
-                              }
-                              
-                              if (!sessionIdToUse || sessionIdToUse === "new" || sessionIdToUse === "edit") {
-                                toast({
-                                  title: "Error",
-                                  description: "Session not found. Please save the session first.",
-                                  variant: "destructive",
-                                })
-                                return
-                              }
+                              // Only persist to DB if we have a real session row.
+                              // If not, keep it in local state and pass it during publish.
+                              const sessionIdToUse: string | null =
+                                (actualSessionId && actualSessionId !== "new" && actualSessionId !== "edit" ? actualSessionId : null) ||
+                                (sessionId && sessionId !== "new" && sessionId !== "edit" ? sessionId : null)
                               
                               if (!hostNameInput.trim()) {
                                 toast({
@@ -3184,22 +3255,35 @@ export function SessionInvite({
                               const newHostWillJoin = !hostWillJoin
                               // Optimistically update UI
                               setHostWillJoin(newHostWillJoin)
+                              if (!sessionIdToUse) {
+                                toast({
+                                  title: newHostWillJoin
+                                    ? "You’ll join when this session is published"
+                                    : "You won’t join this session",
+                                  description: "This preference will be applied when you publish.",
+                                  variant: "success",
+                                })
+                                return
+                              }
+
                               const result = await toggleHostParticipation(sessionIdToUse, newHostWillJoin)
                               if (!result.ok) {
                                 // Revert on error
                                 setHostWillJoin(!newHostWillJoin)
                                 toast({
-                                  title: "Failed to update participation intent",
+                                  title: "Failed to update host participation",
                                   description: result.error,
                                   variant: "destructive",
                                 })
-                              } else {
-                                // State already updated optimistically, just show success
-                                toast({
-                                  title: newHostWillJoin ? "You'll join when this session is published" : "You won't join this session",
-                                  variant: "success",
-                                })
+                                return
                               }
+
+                              toast({
+                                title: newHostWillJoin
+                                  ? "You’ll join when this session is published"
+                                  : "You won’t join this session",
+                                variant: "success",
+                              })
                             }}
                             disabled={isHostNameSaving}
                             className={cn(
@@ -3226,7 +3310,7 @@ export function SessionInvite({
                           </button>
                         </div>
                       ) : (
-                          <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "italic opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
+                          <p className={cn("font-medium text-white truncate", (!displayHostName || displayHostName === "Your name") && "opacity-60", (!isEditMode || isPreviewMode) && HERO_META_SHADOW)}>
                             {displayHostName || "Your name"}
                           </p>
                       )}
@@ -3264,7 +3348,7 @@ export function SessionInvite({
                   rows={1}
                 />
               ) : (
-                <p className={`${mutedText} ${!eventDescription ? "italic opacity-60" : ""} text-sm leading-relaxed whitespace-pre-wrap`}>
+                <p className={`${mutedText} ${!eventDescription ? "opacity-60" : ""} text-sm leading-relaxed whitespace-pre-wrap`}>
                   {eventDescription || "Add a short description for participants"}
                 </p>
               )}
@@ -3331,15 +3415,9 @@ export function SessionInvite({
                 <div className="flex items-center justify-between mb-2">
                   <h2 className={`text-lg font-semibold ${strongText}`}>Going</h2>
                   <div className="flex items-center gap-2">
-                  <Badge className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border-[var(--theme-accent)]/30">
-                      {(() => {
-                        // In preview mode, add host optimistically if hostWillJoin === true
-                        const previewParticipants = isPreviewMode && hostWillJoin && displayHostName
-                          ? [...demoParticipants, { name: displayHostName, avatar: null }]
-                          : demoParticipants
-                        return joinedCount > 0 ? joinedCount : previewParticipants.length
-                      })()} / {eventCapacity || "∞"}
-                  </Badge>
+                    <Badge className="bg-[var(--theme-accent)]/20 text-[var(--theme-accent-light)] border-[var(--theme-accent)]/30">
+                      {(joinedCount > 0 ? joinedCount : demoParticipants.length)} / {eventCapacity || "∞"}
+                    </Badge>
                     {isFull && eventCapacity && eventCapacity > 0 && (
                       <Badge className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold bg-red-500/20 text-red-200 border border-red-500/30 backdrop-blur">
                         <AlertTriangle className="w-3 h-3" />
@@ -3349,19 +3427,13 @@ export function SessionInvite({
                   </div>
                 </div>
                 {(() => {
-                  // In preview mode, add host optimistically if hostWillJoin === true
-                  // DO NOT read from participants table - only use host_will_join flag
-                  const previewParticipants = isPreviewMode && hostWillJoin && displayHostName
-                    ? [...demoParticipants, { name: displayHostName, avatar: null }]
-                    : demoParticipants
-                  
-                  if (previewParticipants.length === 0) {
+                  if (demoParticipants.length === 0) {
                     return <p className={`text-sm ${mutedText} px-1`}>No one has joined so far.</p>
                   }
                   
                   return (
                     <div className="flex gap-3 overflow-x-auto scrollbar-hide pb-2">
-                      {previewParticipants.map((participant, i) => {
+                      {demoParticipants.map((participant, i) => {
                       const initial = (participant.name?.trim()?.[0] ?? "?").toUpperCase()
                       return (
                         <motion.div

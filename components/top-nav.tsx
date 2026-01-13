@@ -15,7 +15,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { LoginDialog } from "@/components/login-dialog"
-import { Avatar, AvatarFallback } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { getAuthAvatarUrl, getInitialLetter } from "@/lib/avatar"
 import { StardustButton } from "@/components/ui/stardust-button"
 import { LiveInviteGuardModal } from "@/components/host/live-invite-guard-modal"
 import { getHostLiveSessions } from "@/app/host/sessions/[id]/actions"
@@ -148,7 +149,8 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
   }
 
   const displayName = getUserDisplayName()
-  const userInitial = displayName?.[0]?.toUpperCase() || authUser?.email?.[0]?.toUpperCase() || "U"
+  const userInitial = getInitialLetter(displayName || authUser?.email)
+  const avatarUrl = getAuthAvatarUrl(authUser)
 
   return (
     <>
@@ -179,6 +181,7 @@ export function TopNav({ showCreateNow = false, onContinueAsGuest }: TopNavProps
                 <DropdownMenuTrigger asChild>
                     <button className="flex items-center gap-2 text-gray-700 dark:text-white/70 hover:text-gray-900 dark:hover:text-white transition-colors">
                     <Avatar className="h-7 w-7 border border-gray-300 dark:border-white/20">
+                      {avatarUrl ? <AvatarImage src={avatarUrl} alt={displayName || "Profile"} /> : null}
                       <AvatarFallback className="bg-gray-100 dark:bg-white/10 text-gray-900 dark:text-white text-xs font-medium">
                         {userInitial}
                       </AvatarFallback>

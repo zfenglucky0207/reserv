@@ -830,8 +830,8 @@ export async function declineSession(
 export async function getSessionParticipants(publicCode: string): Promise<
   | { 
       ok: true
-      participants: Array<{ id: string; display_name: string }>
-      waitlist: Array<{ id: string; display_name: string }>
+      participants: Array<{ id: string; display_name: string; is_host?: boolean }>
+      waitlist: Array<{ id: string; display_name: string; is_host?: boolean }>
     }
   | { ok: false; error: string }
 > {
@@ -851,7 +851,7 @@ export async function getSessionParticipants(publicCode: string): Promise<
   // Get confirmed participants (going)
   const { data: confirmedData, error: confirmedError } = await supabase
     .from("participants")
-    .select("id, display_name")
+    .select("id, display_name, is_host")
     .eq("session_id", session.id)
     .eq("status", "confirmed")
     .order("created_at", { ascending: true })
@@ -863,7 +863,7 @@ export async function getSessionParticipants(publicCode: string): Promise<
   // Get waitlisted participants
   const { data: waitlistData, error: waitlistError } = await supabase
     .from("participants")
-    .select("id, display_name")
+    .select("id, display_name, is_host")
     .eq("session_id", session.id)
     .eq("status", "waitlisted")
     .order("created_at", { ascending: true })
@@ -898,15 +898,37 @@ export async function getUnpaidParticipants(
     return { ok: false, error: "Session not found" }
   }
 
-  // Get all confirmed participants
-  const { data: participants, error: participantsError } = await supabase
-    .from("participants")
-    .select("id, display_name")
-    .eq("session_id", session.id)
-    .eq("status", "confirmed")
-    .order("created_at", { ascending: true })
+  // Get all confirmed participants, excluding the host (host never needs to make payment)
+  // NOTE: requires participants.is_host boolean (migration: 20260113000001_add_is_host_to_participants.sql)
+  let participants: Array<{ id: string; display_name: string; is_host?: boolean }> | null = null
+  let participantsError: any = null
+
+  {
+    const res = await supabase
+      .from("participants")
+      .select("id, display_name, is_host")
+      .eq("session_id", session.id)
+      .eq("status", "confirmed")
+      .eq("is_host", false)
+      .order("created_at", { ascending: true })
+
+    participants = res.data as any
+    participantsError = res.error
+  }
 
   if (participantsError) {
+    // Graceful fallback if column doesn't exist yet (local env drift)
+    if (participantsError.message?.includes("is_host") && participantsError.message?.includes("schema cache")) {
+      const { data, error } = await supabase
+        .from("participants")
+        .select("id, display_name")
+        .eq("session_id", session.id)
+        .eq("status", "confirmed")
+        .order("created_at", { ascending: true })
+
+      if (error) return { ok: false, error: error.message }
+      return { ok: true, participants: data || [] }
+    }
     return { ok: false, error: participantsError.message }
   }
 
@@ -1444,12 +1466,12 @@ export async function submitPaymentProof(
 
 /**
  * Toggle host participation intent (edit mode only)
- * Updates sessions.host_will_join boolean - does NOT insert into participants
- * Participant insertion happens only on publish if host_will_join === true
+ * Updates sessions.host_joins_session boolean - does NOT insert into participants
+ * Participant insertion/removal happens only on publish (host_joins_session is intent only)
  */
 export async function toggleHostParticipation(
   sessionId: string,
-  hostWillJoin: boolean
+  hostJoinsSession: boolean
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const supabase = await createClient()
   const userId = await getUserId(supabase)
@@ -1470,23 +1492,30 @@ export async function toggleHostParticipation(
     return { ok: false, error: "Session not found or unauthorized" }
   }
 
-  // Update host_will_join column (intent only, no participant insert)
+  // Update host_joins_session column (intent only, no participant insert)
   const { error: updateError } = await supabase
     .from("sessions")
     .update({ 
-      host_will_join: hostWillJoin,
+      host_joins_session: hostJoinsSession,
+      host_will_join: hostJoinsSession, // keep legacy column in sync (optional)
       updated_at: new Date().toISOString(),
     })
     .eq("id", sessionId)
 
   if (updateError) {
     // Gracefully handle if column doesn't exist yet (migration not run)
-    if (updateError.message?.includes("host_will_join") && updateError.message?.includes("schema cache")) {
-      console.warn("[toggleHostParticipation] Column not found. Please run migration: 20250125000000_add_host_will_join_to_sessions.sql")
+    if (updateError.message?.includes("host_joins_session") && updateError.message?.includes("schema cache")) {
+      console.warn("[toggleHostParticipation] Column not found. Please run migration: 20260113000000_add_host_joins_session_to_sessions.sql")
       // Return success anyway - the toggle will work locally, just won't persist until migration is run
       return { ok: true }
     }
     return { ok: false, error: updateError.message }
+  }
+
+  try {
+    logInfo("host_join_flag_saved", withTrace({ sessionId, hostJoinsSession }, `host_join_${sessionId}`))
+  } catch {
+    // no-op
   }
 
   revalidatePath(`/host/sessions/${sessionId}/edit`)
@@ -1495,7 +1524,7 @@ export async function toggleHostParticipation(
 }
 
 /**
- * Get host participation intent (host_will_join from sessions table)
+ * Get host participation intent (host_joins_session from sessions table)
  * Returns the intent flag, not actual participant status
  */
 export async function getHostParticipationStatus(
@@ -1508,20 +1537,20 @@ export async function getHostParticipationStatus(
     return { ok: false, error: "Unauthorized" }
   }
 
-  // Get host_will_join from sessions table
+  // Get host_joins_session from sessions table
   const { data: session, error } = await supabase
     .from("sessions")
-    .select("host_will_join")
+    .select("host_joins_session")
     .eq("id", sessionId)
     .eq("host_id", userId)
     .single()
 
   if (error) {
     // Gracefully handle if column doesn't exist yet
-    if (error.message?.includes("host_will_join") && error.message?.includes("schema cache")) {
-      console.warn("[getHostParticipationStatus] Column not found. Please run migration: 20250125000000_add_host_will_join_to_sessions.sql")
-      // Return false as default
-      return { ok: true, hostWillJoin: false }
+    if (error.message?.includes("host_joins_session") && error.message?.includes("schema cache")) {
+      console.warn("[getHostParticipationStatus] Column not found. Please run migration: 20260113000000_add_host_joins_session_to_sessions.sql")
+      // Default to true (matches schema default)
+      return { ok: true, hostWillJoin: true }
     }
     return { ok: false, error: error.message }
   }
@@ -1530,6 +1559,7 @@ export async function getHostParticipationStatus(
     return { ok: false, error: "Session not found" }
   }
 
-  return { ok: true, hostWillJoin: session.host_will_join ?? false }
+  // Default to true (matches schema default)
+  return { ok: true, hostWillJoin: session.host_joins_session ?? true }
 }
 

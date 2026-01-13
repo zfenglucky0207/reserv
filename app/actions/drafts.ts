@@ -12,7 +12,7 @@ export type DraftData = {
   eventDate: string
   eventLocation: string
   eventMapUrl: string
-  eventPrice: number
+  eventPrice: number | null
   eventCapacity: number
   hostName: string | null
   eventDescription: string

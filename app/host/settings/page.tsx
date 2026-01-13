@@ -11,7 +11,8 @@ async function HostSettingsContent() {
   const userId = await getUserId(supabase)
 
   if (!userId) {
-    redirect("/auth/login")
+    // If the user signs out while on this page, default them back to home.
+    redirect("/")
   }
 
   return <HostSettingsClient />

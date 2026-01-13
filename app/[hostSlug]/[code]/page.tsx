@@ -1,4 +1,4 @@
-import { createClient } from "@/lib/supabase/server/server"
+import { createAdminClient, createClient } from "@/lib/supabase/server/server"
 import { notFound, redirect } from "next/navigation"
 import { Suspense } from "react"
 import { PublicSessionView } from "@/components/session/public-session-view"
@@ -123,7 +123,7 @@ async function PublicInviteContent({
   // Select only fields needed for public invite page (explicit fields, not *)
   const { data: session, error: sessionError } = await supabase
     .from("sessions")
-    .select("id, title, host_name, host_slug, host_id, cover_url, status, public_code, start_at, end_at, location, sport, capacity, waitlist_enabled, description, payment_account_name, payment_account_number, payment_bank_name, map_url, payment_qr_image, created_at, updated_at")
+    .select("id, title, host_name, host_slug, host_id, host_avatar_url, cover_url, status, public_code, start_at, end_at, location, sport, capacity, waitlist_enabled, description, payment_account_name, payment_account_number, payment_bank_name, map_url, payment_qr_image, created_at, updated_at")
     .eq("public_code", code)
     .single()
 
@@ -147,6 +147,25 @@ async function PublicInviteContent({
     notFound()
   }
 
+  // If host avatar URL isn't stored yet (older sessions), fetch it from Auth via service role and cache it.
+  if (!(session as any).host_avatar_url) {
+    try {
+      const admin = createAdminClient()
+      const { data } = await admin.auth.admin.getUserById(session.host_id)
+      const avatarUrl =
+        (data as any)?.user?.user_metadata?.avatar_url ||
+        (data as any)?.user?.user_metadata?.picture ||
+        null
+      if (avatarUrl) {
+        await admin
+          .from("sessions")
+          .update({ host_avatar_url: avatarUrl })
+          .eq("id", session.id)
+        ;(session as any).host_avatar_url = avatarUrl
+      }
+    } catch {}
+  }
+
   // Canonicalize hostSlug - redirect if it doesn't match current host_slug
   const currentHostSlug = session.host_slug ? toSlug(session.host_slug) : toSlug(session.host_name || "host")
   if (hostSlug !== currentHostSlug) {
@@ -158,7 +177,7 @@ async function PublicInviteContent({
   // Get ALL participants first (no status filter), then filter client-side
   const { data: allParticipants, error: participantsError } = await supabase
     .from("participants")
-    .select("id, display_name, status, created_at")
+    .select("id, display_name, status, created_at, is_host")
     .eq("session_id", session.id)
     .order("created_at", { ascending: true })
 
@@ -173,6 +192,7 @@ async function PublicInviteContent({
       .map((p) => ({
         id: p.id,
         display_name: p.display_name,
+        is_host: (p as any).is_host === true,
         status: p.status as "confirmed",
       })) || []
 
@@ -182,6 +202,7 @@ async function PublicInviteContent({
       .map((p) => ({
         id: p.id,
         display_name: p.display_name,
+        is_host: (p as any).is_host === true,
         status: p.status as "waitlisted",
       })) || []
 
